@@ -1,0 +1,903 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>BRYC Check-In</title>
+<!-- Firebase SDK — tries multiple CDNs, falls back gracefully -->
+  <script>
+  // Try loading Firebase compat SDK from multiple CDNs
+  window._fbLoaded = false;
+  function _loadScript(src, onload, onerror) {
+    var s = document.createElement('script');
+    s.src = src;
+    s.onload = onload;
+    s.onerror = onerror;
+    document.head.appendChild(s);
+  }
+
+  var _fbCDNs = [
+    ['https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js',
+     'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js'],
+    ['https://cdn.jsdelivr.net/npm/firebase@10.12.0/firebase-app-compat.min.js',
+     'https://cdn.jsdelivr.net/npm/firebase@10.12.0/firebase-firestore-compat.min.js'],
+    ['https://unpkg.com/firebase@10.12.0/firebase-app-compat.js',
+     'https://unpkg.com/firebase@10.12.0/firebase-firestore-compat.js'],
+  ];
+
+  function _tryLoadFb(cdnIndex) {
+    if (cdnIndex >= _fbCDNs.length) {
+      console.warn('All Firebase CDNs failed — check-ins will be local only');
+      window._fbFailed = true;
+      return;
+    }
+    var pair = _fbCDNs[cdnIndex];
+    _loadScript(pair[0], function() {
+      _loadScript(pair[1], function() {
+        window._fbLoaded = true;
+        console.log('Firebase SDK loaded from CDN', cdnIndex);
+        // Trigger init now that SDK is ready
+        if (typeof initFirebase === 'function') initFirebase();
+        if (typeof store !== 'undefined' && store.currentEvent && typeof subscribeCheckins === 'function') {
+          subscribeCheckins(store.currentEvent);
+        }
+      }, function() { _tryLoadFb(cdnIndex + 1); });
+    }, function() { _tryLoadFb(cdnIndex + 1); });
+  }
+
+  document.addEventListener('DOMContentLoaded', function() { _tryLoadFb(0); });
+  </script>
+<style>
+
+
+*, *::before, *::after { box-sizing:border-box; margin:0; padding:0; }
+:root {
+  --black:#0A0A0A;
+  --bryc-orange:#F47521;
+  --bryc-yellow:#F0C917;
+  --bryc-red:#EB2627;
+  --bryc-pink:#ED125F;
+  --bryc-blue:#094D9E;
+  --bryc-teal:#00775F;
+  --gray-50:#F9FAFB; --gray-200:#E5E7EB; --gray-400:#9CA3AF;
+  --gray-500:#6B7280; --gray-600:#4B5563; --gray-700:#374151;
+}
+
+html, body {
+  height:100%; width:100%; overflow:hidden;
+  font-family:'Proxima Nova', Arial, sans-serif;
+  background:var(--black);
+  -webkit-tap-highlight-color:transparent;
+}
+
+/* ── LOADING SCREEN ── */
+#loading-screen {
+  position:fixed; inset:0; background:var(--black);
+  display:flex; flex-direction:column;
+  align-items:center; justify-content:center; gap:16px;
+  z-index:9999;
+}
+.loading-logo { font-size:42px; font-weight:900; color:var(--bryc-orange); letter-spacing:-1px; }
+.loading-sub { font-size:15px; color:rgba(255,255,255,.5); }
+.loading-spinner {
+  width:36px; height:36px; border:3px solid rgba(255,255,255,.15);
+  border-top-color:var(--bryc-orange); border-radius:50%;
+  animation:spin .8s linear infinite;
+}
+@keyframes spin { to { transform:rotate(360deg); } }
+
+/* ── ERROR SCREEN ── */
+#error-screen {
+  position:fixed; inset:0; background:var(--black);
+  display:none; flex-direction:column;
+  align-items:center; justify-content:center; gap:16px;
+  padding:32px; text-align:center; z-index:9998;
+}
+.error-icon { font-size:48px; }
+.error-title { font-size:22px; font-weight:900; color:white; }
+.error-body { font-size:15px; color:rgba(255,255,255,.6); line-height:1.6; max-width:360px; }
+.error-btn {
+  margin-top:8px; padding:14px 32px; border-radius:12px;
+  background:var(--bryc-orange); color:white; border:none;
+  font-size:16px; font-weight:800; cursor:pointer;
+  font-family:inherit;
+}
+
+/* ── KIOSK SCREEN ── */
+#kiosk-screen {
+  position:fixed; inset:0;
+  display:none; flex-direction:column;
+  transition:background .4s ease;
+}
+#kiosk-screen.active { display:flex; }
+
+.kiosk-bg-fellow   { background:linear-gradient(160deg,#E06326 0%,#F0C917 100%); }
+.kiosk-bg-prospect { background:linear-gradient(160deg,#CB0F15 0%,#ED125F 100%); }
+.kiosk-bg-mentor   { background:linear-gradient(160deg,#D51056 0%,#EF2A6F 100%); }
+.kiosk-bg-team     { background:linear-gradient(160deg,#082061 0%,#094D9E 100%); }
+.kiosk-bg-friend   { background:linear-gradient(160deg,#003D2D 0%,#00775F 100%); }
+.kiosk-bg-default  { background:var(--black); }
+
+.kiosk-header {
+  padding:20px 24px 0; text-align:center; position:relative; flex-shrink:0;
+}
+.kiosk-event-name {
+  font-size:clamp(24px,6vw,42px); font-weight:900; color:white;
+  letter-spacing:-1px; line-height:1.1; margin-bottom:4px;
+}
+.kiosk-tagline { font-size:14px; color:rgba(255,255,255,.65); font-weight:400; }
+
+/* Phases */
+.kiosk-phase { display:none; flex:1; flex-direction:column; overflow:hidden; }
+.kiosk-phase.active { display:flex; }
+
+/* Phase 1: Role */
+.role-select-wrap {
+  flex:1; display:flex; flex-direction:column;
+  align-items:center; justify-content:center;
+  padding:16px 20px; gap:12px;
+}
+.role-select-label {
+  font-size:18px; font-weight:800; color:white;
+  text-align:center; margin-bottom:4px;
+}
+.role-cards {
+  display:grid; grid-template-columns:repeat(2,1fr);
+  gap:10px; width:100%; max-width:500px;
+}
+.role-card {
+  background:rgba(255,255,255,.15);
+  border:2px solid rgba(255,255,255,.25);
+  border-radius:14px; padding:18px 12px;
+  cursor:pointer; transition:.15s;
+  display:flex; flex-direction:column;
+  align-items:center; gap:8px; text-align:center;
+  -webkit-tap-highlight-color:transparent;
+}
+.role-card:active { background:rgba(255,255,255,.35); transform:scale(.97); }
+.role-card-icon  { font-size:28px; }
+.role-card-name  { font-weight:800; font-size:13px; color:white; line-height:1.3; }
+.role-card-full  { grid-column:1/-1; }
+
+/* Phase 2: Search */
+.kiosk-search-section {
+  padding:12px 20px 6px; max-width:600px; margin:0 auto; width:100%; flex-shrink:0;
+}
+.kiosk-search-wrap {
+  background:rgba(255,255,255,.15);
+  border:2px solid rgba(255,255,255,.35);
+  border-radius:16px; padding:4px 16px 4px 18px;
+  display:flex; align-items:center; gap:10px; transition:.2s;
+}
+.kiosk-search-wrap:focus-within {
+  background:rgba(255,255,255,.22);
+  border-color:rgba(255,255,255,.7);
+}
+.kiosk-search-icon { color:rgba(255,255,255,.6); font-size:20px; flex-shrink:0; }
+.kiosk-search-input {
+  flex:1; background:transparent; border:none; outline:none;
+  font-size:20px; color:white;
+  font-family:'Proxima Nova',Arial,sans-serif;
+  padding:10px 0;
+}
+.kiosk-search-input::placeholder { color:rgba(255,255,255,.45); }
+
+.kiosk-count-bar {
+  background:rgba(0,0,0,.25); padding:7px 20px;
+  display:flex; align-items:center; justify-content:center; gap:24px;
+  font-size:12px; color:rgba(255,255,255,.6); flex-shrink:0;
+}
+.kiosk-count-item { display:flex; align-items:center; gap:5px; }
+.kiosk-count-num { font-weight:900; font-size:18px; color:white; }
+
+.kiosk-results {
+  flex:1; overflow-y:auto; padding:6px 20px 6px;
+  max-width:600px; margin:0 auto; width:100%;
+  -webkit-overflow-scrolling:touch;
+}
+.kiosk-attendee {
+  background:rgba(255,255,255,.12);
+  border:1.5px solid rgba(255,255,255,.2);
+  border-radius:13px; padding:14px 16px;
+  margin-bottom:8px; cursor:pointer; transition:.15s;
+  display:flex; align-items:center; gap:12px;
+  -webkit-tap-highlight-color:transparent;
+}
+.kiosk-attendee:active { background:rgba(255,255,255,.28); }
+.kiosk-attendee.checked { border-color:rgba(255,255,255,.5); background:rgba(255,255,255,.22); cursor:default; }
+.kiosk-attendee.role-mismatch { opacity:.4; cursor:not-allowed; filter:grayscale(.4); }
+.role-mismatch-toast {
+  background:rgba(0,0,0,.75); color:white; border-radius:12px;
+  padding:14px 18px; margin-bottom:10px; font-size:14px; line-height:1.5;
+  border:1.5px solid rgba(255,100,100,.5); text-align:center;
+}
+.k-avatar {
+  width:44px; height:44px; border-radius:50%;
+  background:rgba(255,255,255,.25);
+  display:flex; align-items:center; justify-content:center;
+  font-weight:900; font-size:17px; color:white; flex-shrink:0;
+}
+.k-name { font-size:17px; color:white; font-weight:700; }
+.k-meta { font-size:12px; color:rgba(255,255,255,.6); margin-top:2px; }
+.k-check {
+  margin-left:auto; width:32px; height:32px; border-radius:50%;
+  border:2px solid rgba(255,255,255,.3);
+  display:flex; align-items:center; justify-content:center;
+  color:rgba(255,255,255,.4); font-size:14px; flex-shrink:0;
+}
+.kiosk-attendee.checked .k-check { background:rgba(255,255,255,.35); border-color:white; color:white; }
+.kiosk-empty { text-align:center; padding:32px 20px; color:rgba(255,255,255,.5); }
+.kiosk-empty-icon { font-size:36px; margin-bottom:10px; }
+.kiosk-empty p { font-size:15px; }
+
+.kiosk-footer-bar {
+  padding:10px 20px 16px; max-width:600px; margin:0 auto; width:100%;
+  flex-shrink:0;
+}
+.kiosk-add-btn {
+  width:100%;
+  background:rgba(255,255,255,.1);
+  border:1.5px dashed rgba(255,255,255,.35);
+  color:rgba(255,255,255,.8); padding:13px 20px;
+  border-radius:10px; cursor:pointer; font-size:14px;
+  font-family:'Proxima Nova',Arial,sans-serif; font-weight:600;
+  transition:.15s; text-align:center;
+}
+.kiosk-add-btn:active { background:rgba(255,255,255,.2); color:white; }
+
+/* Phase 3: Result */
+.kiosk-result-phase {
+  flex:1; display:flex; flex-direction:column;
+  align-items:center; justify-content:center;
+  padding:24px 24px; max-width:560px; margin:0 auto; width:100%;
+  text-align:center; gap:16px; overflow-y:auto;
+}
+.result-icon { font-size:56px; }
+.result-title { font-size:clamp(22px,6vw,28px); font-weight:900; color:white; letter-spacing:-.5px; }
+.result-body { font-size:15px; color:rgba(255,255,255,.8); line-height:1.6; }
+.result-card {
+  background:rgba(255,255,255,.12);
+  border:1.5px solid rgba(255,255,255,.25);
+  border-radius:16px; padding:18px 20px; width:100%; text-align:left;
+}
+.result-card-title {
+  font-weight:800; font-size:13px; color:white;
+  text-transform:uppercase; letter-spacing:.8px; margin-bottom:8px;
+}
+.survey-item {
+  display:flex; align-items:flex-start; gap:10px;
+  padding:10px 0; border-bottom:1px solid rgba(255,255,255,.1);
+  color:white; font-size:14px; font-weight:600;
+}
+.survey-item:last-child { border-bottom:none; }
+.survey-status { font-size:20px; flex-shrink:0; margin-top:1px; }
+.survey-link {
+  color:white; text-decoration:underline;
+  font-size:13px; font-weight:700; margin-top:4px; display:block; opacity:.85;
+}
+.result-actions { display:flex; gap:10px; flex-wrap:wrap; justify-content:center; width:100%; }
+
+/* Walk-in modal */
+.modal-overlay {
+  position:fixed; inset:0; background:rgba(0,0,0,.65);
+  display:flex; align-items:flex-end; justify-content:center;
+  z-index:500; padding-bottom:env(safe-area-inset-bottom);
+}
+.modal-sheet {
+  background:white; border-radius:20px 20px 0 0;
+  padding:24px 24px 32px; width:100%; max-width:540px;
+}
+.modal-title { font-size:18px; font-weight:900; margin-bottom:16px; color:#0A0A0A; }
+.fg { margin-bottom:12px; }
+.fl { font-size:12px; font-weight:700; color:#6B7280; text-transform:uppercase; letter-spacing:.5px; display:block; margin-bottom:5px; }
+.fi {
+  width:100%; border:2px solid #E5E7EB; border-radius:10px;
+  padding:11px 14px; font-size:16px; font-family:inherit;
+  outline:none; transition:.15s;
+}
+.fi:focus { border-color:var(--bryc-orange); }
+.wi-role-btn {
+  padding:10px 8px; font-size:13px; font-weight:700; border-radius:10px;
+  border:2px solid #E5E7EB; background:#F9FAFB;
+  color:#374151; cursor:pointer; text-align:center; transition:.15s;
+  font-family:inherit;
+}
+.wi-role-btn:active { border-color:var(--bryc-orange); background:#FFF7ED; }
+.wi-role-btn.selected { border-color:var(--bryc-orange); background:#FFF7ED; color:var(--bryc-orange); }
+.modal-actions { display:flex; gap:10px; margin-top:16px; }
+.btn {
+  padding:12px 20px; border-radius:10px; border:none;
+  font-size:15px; font-weight:800; cursor:pointer; font-family:inherit;
+  transition:.15s; flex:1; text-align:center;
+}
+.btn-black { background:#0A0A0A; color:white; }
+.btn-ghost { background:#F3F4F6; color:#374151; }
+.btn-lg {
+  padding:14px 24px; font-size:16px; border-radius:12px;
+  border:2px solid rgba(255,255,255,.4);
+  background:rgba(255,255,255,.2); color:white;
+  font-weight:800; cursor:pointer; font-family:inherit;
+}
+
+/* Toast */
+.toast {
+  position:fixed; bottom:24px; left:50%; transform:translateX(-50%);
+  background:#0A0A0A; color:white; padding:12px 22px;
+  border-radius:12px; font-size:14px; font-weight:700;
+  z-index:9990; opacity:0; pointer-events:none;
+  transition:opacity .2s; white-space:nowrap;
+  max-width:90vw; text-align:center;
+}
+.toast.show { opacity:1; }
+.toast.error { background:#991B1B; }
+
+/* Back button */
+.kiosk-back {
+  position:absolute; top:16px; left:16px;
+  background:rgba(255,255,255,.15); border:1px solid rgba(255,255,255,.25);
+  color:white; padding:8px 16px; border-radius:8px;
+  cursor:pointer; font-size:13px; font-family:inherit;
+  font-weight:700; z-index:10;
+}
+
+/* Sync indicator */
+#sync-indicator {
+  position:fixed; top:12px; right:16px;
+  font-size:11px; font-weight:700; color:rgba(255,255,255,.5);
+  z-index:200; display:flex; align-items:center; gap:5px;
+}
+.sync-dot {
+  width:7px; height:7px; border-radius:50%;
+  background:rgba(255,255,255,.3);
+}
+.sync-dot.connected { background:#22C55E; }
+.sync-dot.error { background:#EF4444; }
+</style>
+</head>
+<body>
+
+<!-- Loading -->
+<div id="loading-screen">
+  <div class="loading-logo">BRYC</div>
+  <div class="loading-spinner"></div>
+  <div class="loading-sub">Loading check-in…</div>
+</div>
+
+<!-- Error -->
+<div id="error-screen">
+  <div class="error-icon">⚠️</div>
+  <div class="error-title">Check-In Unavailable</div>
+  <div class="error-body" id="error-msg">Could not connect. Please ask a staff member for help.</div>
+  <button class="error-btn" onclick="location.reload()">Try Again</button>
+</div>
+
+<!-- Sync indicator -->
+<div id="sync-indicator">
+  <div class="sync-dot" id="sync-dot"></div>
+  <span id="sync-label">Connecting…</span>
+</div>
+
+<!-- Kiosk screen -->
+<div id="kiosk-screen" class="kiosk-bg-default">
+
+  <div class="kiosk-header">
+    <div class="kiosk-event-name" id="kiosk-event-name">BRYC Block Party</div>
+    <div class="kiosk-tagline" id="kiosk-tagline">Saturday, May 2 · BRYC Downtown</div>
+  </div>
+
+  <!-- Phase 1: Role -->
+  <div class="kiosk-phase active" id="kp-role">
+    <div class="role-select-wrap">
+      <div class="role-select-label">Who are you?</div>
+      <div class="role-cards">
+        <div class="role-card" onclick="selectRole('fellow')">
+          <div class="role-card-icon">🌟</div>
+          <div class="role-card-name">Current BRYC Fellow</div>
+        </div>
+        <div class="role-card" onclick="selectRole('prospect')">
+          <div class="role-card-icon">🔍</div>
+          <div class="role-card-name">Prospective Fellow</div>
+        </div>
+        <div class="role-card" onclick="selectRole('mentor')">
+          <div class="role-card-icon">🤝</div>
+          <div class="role-card-name">Mentor</div>
+        </div>
+        <div class="role-card" onclick="selectRole('team')">
+          <div class="role-card-icon">🏢</div>
+          <div class="role-card-name">Team &amp; Board</div>
+        </div>
+        <div class="role-card role-card-full" onclick="selectRole('friend')">
+          <div class="role-card-icon">💛</div>
+          <div class="role-card-name">Friend of BRYC</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Phase 2: Search -->
+  <div class="kiosk-phase" id="kp-search">
+    <button class="kiosk-back" onclick="goBack()">← Back</button>
+    <div class="kiosk-search-section">
+      <div class="kiosk-search-wrap">
+        <div class="kiosk-search-icon">⌕</div>
+        <input class="kiosk-search-input" id="kiosk-search"
+          placeholder="Type your name…"
+          oninput="kioskSearch(this.value)"
+          autocomplete="off" autocorrect="off" spellcheck="false">
+      </div>
+    </div>
+    <div class="kiosk-count-bar">
+      <div class="kiosk-count-item"><span class="kiosk-count-num" id="k-total">—</span><span>Expected</span></div>
+      <div class="kiosk-count-item"><span class="kiosk-count-num" id="k-in">—</span><span>Checked In</span></div>
+      <div class="kiosk-count-item"><span class="kiosk-count-num" id="k-remain">—</span><span>Remaining</span></div>
+    </div>
+    <div class="kiosk-results" id="kiosk-results">
+      <div class="kiosk-empty"><div class="kiosk-empty-icon">⬆</div><p>Type your name above</p></div>
+    </div>
+    <div class="kiosk-footer-bar">
+      <button class="kiosk-add-btn" onclick="showWalkIn()">+ Can't find your name? Add yourself here</button>
+    </div>
+  </div>
+
+  <!-- Phase 3: Result -->
+  <div class="kiosk-phase" id="kp-result">
+    <button class="kiosk-back" onclick="resetKiosk()">← Check in someone else</button>
+    <div class="kiosk-result-phase" id="kp-result-inner"></div>
+  </div>
+</div>
+
+<!-- Walk-in modal -->
+<div id="walkin-modal" style="display:none; position:fixed; inset:0; z-index:600;">
+  <div class="modal-overlay" onclick="if(event.target.classList.contains('modal-overlay'))closeWalkIn()">
+    <div class="modal-sheet">
+      <div class="modal-title">Add Yourself</div>
+      <div class="fg">
+        <label class="fl">First Name *</label>
+        <input class="fi" id="wi-first" placeholder="First name" autocomplete="off">
+      </div>
+      <div class="fg">
+        <label class="fl">Last Name</label>
+        <input class="fi" id="wi-last" placeholder="Last name" autocomplete="off">
+      </div>
+      <div class="fg">
+        <label class="fl">Who are you? *</label>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:6px">
+          <button type="button" class="wi-role-btn" data-role="Current BRYC Fellow" onclick="selectWiRole(this)">🌟 Current Fellow</button>
+          <button type="button" class="wi-role-btn" data-role="Prospective Fellow" onclick="selectWiRole(this)">🔍 Prospective Fellow</button>
+          <button type="button" class="wi-role-btn" data-role="Mentor" onclick="selectWiRole(this)">🤝 Mentor</button>
+          <button type="button" class="wi-role-btn" data-role="BRYC Team &amp; Board" onclick="selectWiRole(this)">🏢 Team &amp; Board</button>
+          <button type="button" class="wi-role-btn" data-role="Friend of BRYC" onclick="selectWiRole(this)" style="grid-column:1/-1">💛 Friend of BRYC</button>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" onclick="closeWalkIn()">Cancel</button>
+        <button class="btn btn-black" onclick="addWalkIn()">Add &amp; Check In</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ── CONFIG ─────────────────────────────────────────────────────────────────
+const STORE_KEY = 'bryc_hub_v2';   // same key as index.html
+const EVENT_ID_KEY = 'bryc_kiosk_event'; // separate key to store which event kiosk shows
+
+// ── STATE ──────────────────────────────────────────────────────────────────
+let kioskRole = null;
+let eventId = null;
+let eventData = null;
+let rsvps = [];
+let checkins = [];
+let _db = null;
+let _unsubscribe = null;
+let wiSelectedRole = null;
+
+const ROLE_LABEL_MAP = {
+  fellow:   'Current BRYC Fellow',
+  prospect: 'Prospective Fellow',
+  mentor:   'Mentor',
+  team:     'BRYC Team & Board',
+  friend:   'Friend of BRYC',
+};
+
+// ── LOAD DATA FROM LOCALSTORAGE (shared with dashboard) ───────────────────
+function loadData() {
+  try {
+    const raw = localStorage.getItem(STORE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch(e) { return null; }
+}
+
+// ── FIREBASE ───────────────────────────────────────────────────────────────
+function fbConfig() {
+  try {
+    const data = loadData();
+    const cfg = data?.settings?.firebaseConfig;
+    if (!cfg) return null;
+    return typeof cfg === 'string' ? JSON.parse(cfg) : cfg;
+  } catch(e) { return null; }
+}
+
+function initFirebase() {
+  const cfg = fbConfig();
+  if (!cfg) return false;
+  if (typeof firebase === 'undefined') return false;
+  try {
+    const existing = firebase.apps.find(a => a.name === 'bryc-kiosk');
+    if (existing) {
+      _db = existing.firestore();
+    } else {
+      const app = firebase.initializeApp(cfg, 'bryc-kiosk');
+      _db = app.firestore();
+    }
+    _db.enablePersistence({ synchronizeTabs: true }).catch(()=>{});
+    setSyncStatus('connected');
+    return true;
+  } catch(e) {
+    console.error('Firebase init:', e);
+    setSyncStatus('error');
+    return false;
+  }
+}
+
+function subscribeCheckins() {
+  if (!_db || !eventId) return;
+  if (_unsubscribe) { _unsubscribe(); _unsubscribe = null; }
+  _unsubscribe = _db
+    .collection('checkins').doc(eventId).collection('attendees')
+    .onSnapshot(snap => {
+      checkins = [];
+      snap.forEach(d => checkins.push(d.data()));
+      updateKioskCounts();
+      // Refresh search results if on search phase
+      const q = document.getElementById('kiosk-search')?.value || '';
+      if (document.getElementById('kp-search').classList.contains('active')) {
+        kioskSearch(q);
+      }
+      setSyncStatus('connected');
+    }, err => {
+      console.error('Snapshot error:', err);
+      setSyncStatus('error');
+    });
+}
+
+function fbAddCheckin(checkin) {
+  // Optimistic local update
+  if (!checkins.some(c => c.name === checkin.name)) checkins.push(checkin);
+  if (!_db) return;
+  const safeName = checkin.name.replace(/[^a-zA-Z0-9_-]/g, '_');
+  _db.collection('checkins').doc(eventId)
+     .collection('attendees').doc(safeName)
+     .set({...checkin, syncedAt: firebase.firestore.FieldValue.serverTimestamp()})
+     .catch(e => { toast('Sync error — saved locally', true); console.error(e); });
+}
+
+function setSyncStatus(status) {
+  const dot = document.getElementById('sync-dot');
+  const label = document.getElementById('sync-label');
+  if (status === 'connected') {
+    dot.className = 'sync-dot connected';
+    label.textContent = 'Live';
+  } else if (status === 'error') {
+    dot.className = 'sync-dot error';
+    label.textContent = 'Offline';
+  } else {
+    dot.className = 'sync-dot';
+    label.textContent = 'Connecting…';
+  }
+}
+
+// ── INIT ───────────────────────────────────────────────────────────────────
+function init() {
+  const data = loadData();
+  if (!data || !data.events || data.events.length === 0) {
+    showError('No events found. Please set up an event in the dashboard first, then scan the QR code again.');
+    return;
+  }
+
+  // Find event — prefer URL param ?event=ID, then stored preference, then most recent
+  const urlParams = new URLSearchParams(window.location.search);
+  const urlEventId = urlParams.get('event');
+  const storedEventId = localStorage.getItem(EVENT_ID_KEY);
+
+  eventId = (urlEventId && data.events.find(e=>e.id===urlEventId))
+    ? urlEventId
+    : (storedEventId && data.events.find(e=>e.id===storedEventId))
+    ? storedEventId
+    : data.events[data.events.length - 1].id;
+
+  eventData = data.events.find(e => e.id === eventId);
+  rsvps = data.rsvps?.[eventId] || [];
+
+  // Update header
+  document.getElementById('kiosk-event-name').textContent = eventData.name || 'BRYC Event';
+  const d = new Date((eventData.date||'') + 'T00:00:00');
+  const dateStr = isNaN(d) ? '' : d.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
+  document.getElementById('kiosk-tagline').textContent =
+    dateStr + (eventData.location ? ' · ' + eventData.location : '');
+
+  // Init Firebase
+  const ok = initFirebase();
+  if (ok) {
+    subscribeCheckins();
+  } else {
+    setSyncStatus('error');
+  }
+
+  updateKioskCounts();
+  document.getElementById('loading-screen').style.display = 'none';
+  document.getElementById('kiosk-screen').classList.add('active');
+}
+
+function showError(msg) {
+  document.getElementById('loading-screen').style.display = 'none';
+  document.getElementById('error-msg').textContent = msg;
+  document.getElementById('error-screen').style.display = 'flex';
+}
+
+// ── KIOSK LOGIC ────────────────────────────────────────────────────────────
+function setKioskBg(cls) {
+  const ks = document.getElementById('kiosk-screen');
+  ks.className = ks.className.replace(/kiosk-bg-\w+/g,'').trim();
+  ks.classList.add('active', cls || 'kiosk-bg-default');
+}
+
+function showPhase(id) {
+  ['kp-role','kp-search','kp-result'].forEach(p =>
+    document.getElementById(p).classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+}
+
+function selectRole(role) {
+  kioskRole = role;
+  setKioskBg('kiosk-bg-' + role);
+  showPhase('kp-search');
+  const inp = document.getElementById('kiosk-search');
+  inp.value = '';
+  kioskSearch('');
+  setTimeout(() => inp.focus(), 150);
+}
+
+function goBack() {
+  kioskRole = null;
+  setKioskBg('kiosk-bg-default');
+  showPhase('kp-role');
+}
+
+function resetKiosk() {
+  kioskRole = null;
+  setKioskBg('kiosk-bg-default');
+  showPhase('kp-role');
+  document.getElementById('kiosk-search').value = '';
+}
+
+function rolesMatch(kioskKey, communityRole) {
+  if (!kioskKey || !communityRole) return true;
+  const expected = ROLE_LABEL_MAP[kioskKey];
+  if (!expected) return true;
+  const norm = s => s.toLowerCase().replace(/[^a-z]/g,'');
+  return norm(communityRole).includes(norm(expected)) ||
+         norm(expected).includes(norm(communityRole));
+}
+
+function kioskSearch(q) {
+  const res = document.getElementById('kiosk-results');
+  let filtered = rsvps;
+  if (q.trim()) {
+    filtered = rsvps.filter(r => r.fullName.toLowerCase().includes(q.toLowerCase()));
+  }
+  if (!rsvps.length) {
+    res.innerHTML = '<div class="kiosk-empty"><div class="kiosk-empty-icon">📋</div><p>No RSVPs loaded yet.</p></div>';
+    return;
+  }
+  if (!filtered.length && q.trim()) {
+    res.innerHTML = `<div class="kiosk-empty"><div class="kiosk-empty-icon">🔍</div><p>No one found for "${q}"</p></div>`;
+    return;
+  }
+  if (!filtered.length) {
+    res.innerHTML = '<div class="kiosk-empty"><div class="kiosk-empty-icon">⬆</div><p>Type your name above</p></div>';
+    return;
+  }
+  res.innerHTML = filtered.map(r => {
+    const isIn = checkins.some(c => c.name === r.fullName);
+    const init = r.fullName.split(' ').map(x=>x[0]).join('').slice(0,2).toUpperCase();
+    const roleOk = rolesMatch(kioskRole, r.communityRole);
+    const wrongRole = !roleOk;
+    const expectedLabel = ROLE_LABEL_MAP[kioskRole] || '';
+    return `<div class="kiosk-attendee ${isIn?'checked':''} ${wrongRole?'role-mismatch':''}"
+      onclick="${isIn ? '' : wrongRole
+        ? `showRoleMismatch('${r.communityRole.replace(/'/g,"\\'")}')`
+        : `kioskCheckIn('${r.fullName.replace(/'/g,"\\'")}')`}">
+      <div class="k-avatar">${init}</div>
+      <div style="flex:1">
+        <div class="k-name">${r.fullName}</div>
+        <div class="k-meta">${r.communityRole||''}</div>
+      </div>
+      <div class="k-check">${isIn ? '✓' : wrongRole ? '🔒' : '→'}</div>
+    </div>`;
+  }).join('');
+}
+
+function showRoleMismatch(actualRole) {
+  const expected = ROLE_LABEL_MAP[kioskRole] || '';
+  const msg = document.createElement('div');
+  msg.className = 'role-mismatch-toast';
+  msg.innerHTML = `<strong>Wrong sign-in type.</strong><br>You signed in as <em>${expected}</em> but you're registered as <em>${actualRole}</em>.<br><span style="font-size:12px;opacity:.8">Please go back and choose the correct role.</span>`;
+  const res = document.getElementById('kiosk-results');
+  res.querySelectorAll('.role-mismatch-toast').forEach(e=>e.remove());
+  res.insertBefore(msg, res.firstChild);
+  setTimeout(()=>msg.remove(), 4000);
+}
+
+function kioskCheckIn(name) {
+  if (checkins.some(c => c.name === name)) return;
+  const person = rsvps.find(r => r.fullName === name);
+  if (person && !rolesMatch(kioskRole, person.communityRole)) {
+    showRoleMismatch(person.communityRole);
+    return;
+  }
+  const checkin = {name, time:new Date().toISOString(), method:'kiosk', role:kioskRole||'unknown'};
+  fbAddCheckin(checkin);
+  updateKioskCounts();
+  showResult(name, person);
+}
+
+function showResult(name, person) {
+  showPhase('kp-result');
+  const firstName = name.split(' ')[0];
+
+  if (kioskRole === 'prospect') {
+    document.getElementById('kp-result-inner').innerHTML = `
+      <div class="result-icon">👋</div>
+      <div class="result-title">Welcome, ${firstName}!</div>
+      <div class="result-body">You're checked in!</div>
+      <div class="result-card">
+        <div class="result-card-title">📍 Your Next Step</div>
+        <div class="survey-item"><span class="survey-status">🟠</span><span>Head upstairs to <strong>Integrity 3</strong> to meet with <strong>Mr. Forrest</strong> and <strong>Mr. Marcus</strong> about joining BRYC.</span></div>
+        <div class="survey-item"><span class="survey-status">🌐</span><span>Apply at <a class="survey-link" href="https://thebryc.org/apply" target="_blank">thebryc.org/apply</a></span></div>
+      </div>
+      <div class="result-actions">
+        <button class="btn-lg" onclick="resetKiosk()">Done</button>
+      </div>`;
+    return;
+  }
+
+  if (kioskRole === 'fellow') {
+    const fd = person?.fellowSurveyDone;
+    const gd = person?.guardianSurveyDone;
+    const allDone = fd && gd;
+    document.getElementById('kp-result-inner').innerHTML = `
+      <div class="result-icon">${allDone?'🎉':'⚠️'}</div>
+      <div class="result-title">${allDone ? `Welcome, ${firstName}!` : `Almost there, ${firstName}!`}</div>
+      <div class="result-body">${allDone ? 'You're all set — enjoy the Block Party! 🎊' : 'You're checked in, but a couple things need your attention:'}</div>
+      <div class="result-card">
+        <div class="result-card-title">Survey Status</div>
+        <div class="survey-item">
+          <span class="survey-status">${fd?'✅':'❌'}</span>
+          <div>
+            <div>Fellow EOY Survey — ${fd?'Complete ✓':'Not done yet'}</div>
+            ${!fd ? '<a class="survey-link" href="https://thebryc.org/fellow26" target="_blank">→ Complete at thebryc.org/fellow26</a>' : ''}
+          </div>
+        </div>
+        <div class="survey-item">
+          <span class="survey-status">${gd?'✅':'❌'}</span>
+          <div>
+            <div>Guardian Survey — ${gd?'Complete ✓':'Not done yet'}</div>
+            ${!gd ? '<div style="font-size:13px;color:rgba(255,255,255,.75);margin-top:4px">📱 Text your guardian: <strong>thebryc.org/guardian26</strong></div>' : ''}
+          </div>
+        </div>
+      </div>
+      <div class="result-actions">
+        <button class="btn-lg" onclick="resetKiosk()">Done</button>
+      </div>`;
+    return;
+  }
+
+  // mentor / team / friend
+  document.getElementById('kp-result-inner').innerHTML = `
+    <div class="result-icon">✅</div>
+    <div class="result-title">You're checked in!</div>
+    <div class="result-body">Welcome, <strong>${firstName}</strong>! Enjoy the celebration. 🎉</div>
+    <div class="result-actions">
+      <button class="btn-lg" onclick="resetKiosk()">Done</button>
+    </div>`;
+}
+
+function updateKioskCounts() {
+  document.getElementById('k-total').textContent = rsvps.filter(r=>r.rsvpStatus==='Attending').length;
+  const inCount = checkins.length;
+  document.getElementById('k-in').textContent = inCount;
+  document.getElementById('k-remain').textContent = Math.max(0, rsvps.filter(r=>r.rsvpStatus==='Attending').length - inCount);
+}
+
+// ── WALK-IN ────────────────────────────────────────────────────────────────
+function showWalkIn() {
+  wiSelectedRole = null;
+  document.querySelectorAll('.wi-role-btn').forEach(b=>b.classList.remove('selected'));
+  if (kioskRole) {
+    const label = ROLE_LABEL_MAP[kioskRole];
+    const btn = document.querySelector(`.wi-role-btn[data-role="${label}"]`);
+    if (btn) { btn.classList.add('selected'); wiSelectedRole = label; }
+  }
+  document.getElementById('wi-first').value = '';
+  document.getElementById('wi-last').value = '';
+  document.getElementById('walkin-modal').style.display = 'block';
+}
+
+function closeWalkIn() {
+  document.getElementById('walkin-modal').style.display = 'none';
+}
+
+function selectWiRole(btn) {
+  document.querySelectorAll('.wi-role-btn').forEach(b=>b.classList.remove('selected'));
+  btn.classList.add('selected');
+  wiSelectedRole = btn.dataset.role;
+  const roleMap = {
+    'Current BRYC Fellow':'fellow','Prospective Fellow':'prospect',
+    'Mentor':'mentor','BRYC Team & Board':'team','Friend of BRYC':'friend'
+  };
+  kioskRole = roleMap[wiSelectedRole] || 'friend';
+}
+
+function addWalkIn() {
+  const first = document.getElementById('wi-first').value.trim();
+  const last  = document.getElementById('wi-last').value.trim();
+  if (!first) return toast('First name required', true);
+  if (!wiSelectedRole) return toast('Please select your role', true);
+  const fullName = (first + ' ' + last).trim();
+  const roleMap = {'Current BRYC Fellow':'fellow','Prospective Fellow':'prospect','Mentor':'mentor','BRYC Team & Board':'team','Friend of BRYC':'friend'};
+  kioskRole = roleMap[wiSelectedRole] || 'friend';
+
+  // Add to local rsvps list so they appear
+  rsvps.push({
+    fullName, firstName:first, lastName:last,
+    communityRole:wiSelectedRole, rsvpStatus:'Attending',
+    fellowSurveyDone:false, guardianSurveyDone:false,
+    notes:'Walk-in', timestamp:new Date().toISOString()
+  });
+
+  closeWalkIn();
+  const checkin = {name:fullName, time:new Date().toISOString(), method:'walkin', role:kioskRole};
+  fbAddCheckin(checkin);
+  updateKioskCounts();
+  const person = rsvps.find(r=>r.fullName===fullName);
+  showResult(fullName, person);
+}
+
+// ── TOAST ──────────────────────────────────────────────────────────────────
+let _toastTimer;
+function toast(msg, isError) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = 'toast show' + (isError ? ' error' : '');
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => el.className = 'toast', 2500);
+}
+
+// ── BOOT ───────────────────────────────────────────────────────────────────
+// Wait for Firebase SDK to load, then init
+window._fbKioskReady = function() {
+  init();
+};
+
+// The Firebase loader script calls initFirebase() when done — we hook in here
+const _origInitFb = window.initFirebase;
+window.initFirebase = function() {
+  if (typeof _origInitFb === 'function') _origInitFb();
+  init();
+};
+
+// Fallback: if SDK already loaded or isn't coming
+setTimeout(() => {
+  if (document.getElementById('loading-screen').style.display !== 'none') {
+    init();
+  }
+}, 2000);
+</script>
+</body>
+</html>

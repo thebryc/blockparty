@@ -55,6 +55,7 @@
 
   document.addEventListener('DOMContentLoaded', function() { _tryLoadFb(0); });
   </script>
+  <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
 </head>
 <body>
 <style>
@@ -2129,7 +2130,44 @@ function seedDemo() {
   store.checkins[id]=[];
   saveStore();
 }
+
+function showQRCode() {
+  const evt = store.events.find(e=>e.id===store.currentEvent);
+  if (!evt) return toast('No event selected', true);
+  // Build kiosk URL — same origin, kiosk.html with event param
+  const base = window.location.href.replace(/index\.html.*$/, '').replace(/\?.*$/, '');
+  const url = base + 'kiosk.html?event=' + encodeURIComponent(evt.id);
+  document.getElementById('qr-url').textContent = url;
+  document.getElementById('qr-subtitle').textContent = evt.name + ' · Fellows scan to check in on their phones';
+  openModal('qr-modal');
+  // Generate QR code
+  const canvas = document.getElementById('qr-canvas');
+  if (typeof QRCode !== 'undefined') {
+    QRCode.toCanvas(canvas, url, {
+      width: 280, margin: 2,
+      color: { dark: '#0A0A0A', light: '#FFFFFF' }
+    }, err => { if (err) console.error(err); });
+  } else {
+    // Fallback: show URL as text if QR lib didn't load
+    canvas.style.display = 'none';
+  }
+}
 </script>
 
+
+<!-- QR Code Modal -->
+<div id="qr-modal" style="display:none; position:fixed; inset:0; z-index:600;">
+  <div class="modal-overlay" onclick="if(event.target===this)closeModal('qr-modal')" style="align-items:center;justify-content:center">
+    <div style="background:white;border-radius:20px;padding:32px 36px;max-width:420px;width:90%;text-align:center">
+      <div style="font-size:20px;font-weight:900;margin-bottom:4px">Scan to Check In</div>
+      <div style="font-size:13px;color:#6B7280;margin-bottom:24px" id="qr-subtitle">Share this QR code so Fellows can check in on their phones</div>
+      <canvas id="qr-canvas" style="margin:0 auto;display:block;border-radius:12px"></canvas>
+      <div style="margin-top:16px;font-size:12px;color:#9CA3AF;word-break:break-all" id="qr-url"></div>
+      <div style="display:flex;gap:10px;margin-top:20px">
+        <button class="btn btn-black" style="flex:1" onclick="closeModal('qr-modal')">Done</button>
+      </div>
+    </div>
+  </div>
+</div>
 </body>
 </html>
