@@ -798,6 +798,10 @@ tr:hover td { background:var(--gray-100); }
         <div style="padding:18px" id="dietary-panel"></div>
       </div>
     </div>
+    <div class="panel" id="team-roles-panel" style="margin-bottom:24px">
+      <div class="panel-head">Team Roles &amp; Responsibilities</div>
+      <div id="team-roles-body" style="padding:18px"></div>
+    </div>
     <div class="panel">
       <div class="panel-head">
         RSVP List
@@ -1203,6 +1207,7 @@ function renderDashboard() {
     : `<p style="font-size:13px;color:var(--gray-400)">No restrictions reported.</p>`;
 
   renderTable(rsvps);
+  renderTeamRoles();
 }
 
 function renderTable(rsvps) {
@@ -1236,6 +1241,163 @@ function renderTable(rsvps) {
     </tr>`;
   }).join('');
 }
+
+// ──────────────────────────────────────────────────────
+// TEAM ROLES & RESPONSIBILITIES
+// ──────────────────────────────────────────────────────
+const TEAM_ROLES = [
+  {
+    time: "9:00a – Setup",
+    shifts: [
+      {
+        area: "Front Door & H2 Check-In",
+        icon: "🚪",
+        first: ["Chasity", "Mychell", "Aareena"],
+        second: ["Lauren", "Kendrick", "(1:45p → Amylah G takes over)"],
+        duties: [
+          "Direct Current Fellows (no prospect), mentors, Team & Board → Hustle 2",
+          "Direct Prospective Fellows & Fellows with prospects → Integrity 3",
+          "Tally guest type (mentor, Fellow, Prospective Fellow, Team, Board)",
+          "QR codes & computers for Fellow check-in",
+          "Guest attendance clicker"
+        ]
+      },
+      {
+        area: "H1 House Party",
+        icon: "🎉",
+        first: ["Lauren", "Kendrick", "Angela"],
+        second: ["Aareena", "Chasity", "Kirsten"],
+        duties: [
+          "Encourage Fellows to dance",
+          "Keep the vibe high, but appropriate"
+        ]
+      },
+      {
+        area: "Arts & Crafts",
+        icon: "🎨",
+        first: ["Kirsten"],
+        second: ["Amyla M"],
+        duties: [
+          "Ensure Fellows engage safely and neatly",
+          "Ensure craft area remains in order",
+          "Make sure movie is playing at appropriate volume"
+        ]
+      },
+      {
+        area: "Food Service – Kitchen",
+        icon: "🦞",
+        staff: ["Amylah G", "Angela"],
+        duties: [
+          "Serve crawfish & pizza",
+          "1:15p: pack up crawfish in remaining pans with lids for handoff"
+        ]
+      },
+      {
+        area: "Food Service – Community",
+        icon: "🥤",
+        staff: ["Angela"],
+        duties: [
+          "Coolers with drinks & popsicles",
+          "Refill drinks and popsicles as needed"
+        ]
+      },
+      {
+        area: "RAM (Integrity 3) – Prospect Check-In",
+        icon: "🎓",
+        staff: ["Forrest", "Marcus"],
+        duties: [
+          "Forrest leading indoor RAM portion",
+          "Marcus assisting",
+          "Current Fellows complete check-in tasks while prospects apply/hear presentation"
+        ]
+      },
+      {
+        area: "Floating",
+        icon: "🌊",
+        staff: ["Josh", "Lucas"],
+        duties: [
+          "Floating & filling in where needed",
+          "Helping with food service"
+        ]
+      }
+    ]
+  },
+  {
+    time: "1:50p – PM Pie / Dunk Tank",
+    icon: "🥧",
+    note: "Move everyone downstairs, close off upstairs. PMs getting pied line up outside. Fellows get a 'pie' (paper plate with whipped cream) and choose their PM. PMs not getting pied stay inside to chaperone Fellows."
+  },
+  {
+    time: "2:00p – Pickup & Monitoring",
+    icon: "🚗",
+    note: "Rest of Team monitors Fellow/prospect pickup."
+  },
+  {
+    time: "2:00–3:00p – Cleanup & Breakdown",
+    icon: "🧹",
+    note: "1:45p: OAs and RAM start. Bring all materials inside."
+  }
+];
+
+function renderTeamRoles() {
+  const el = document.getElementById('team-roles-body');
+  if (!el) return;
+  
+  let html = '<div style="display:flex;flex-direction:column;gap:20px">';
+  
+  TEAM_ROLES.forEach(section => {
+    html += `<div>`;
+    html += `<div style="font-weight:800;font-size:15px;color:var(--bryc-orange);margin-bottom:10px;padding-bottom:6px;border-bottom:2px solid var(--bryc-orange)">${section.icon||''} ${section.time}</div>`;
+    
+    if (section.note) {
+      html += `<p style="font-size:13px;color:var(--gray-700);margin:0;padding:10px 14px;background:var(--gray-50);border-radius:8px">${section.note}</p>`;
+    }
+    
+    if (section.shifts) {
+      html += `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;margin-top:8px">`;
+      section.shifts.forEach(shift => {
+        html += `<div style="background:white;border:1px solid var(--gray-200);border-radius:10px;padding:14px">`;
+        html += `<div style="font-weight:700;font-size:13px;margin-bottom:8px">${shift.icon||'👤'} ${shift.area}</div>`;
+        
+        if (shift.staff) {
+          html += `<div style="margin-bottom:8px">`;
+          html += `<span style="font-size:11px;font-weight:700;color:var(--gray-500);text-transform:uppercase;letter-spacing:.5px">Team</span><br>`;
+          html += `<span style="font-size:13px;color:var(--gray-800)">${shift.staff.join(' · ')}</span>`;
+          html += `</div>`;
+        }
+        
+        if (shift.first) {
+          html += `<div style="margin-bottom:6px">`;
+          html += `<span style="font-size:11px;font-weight:700;color:var(--bryc-orange);text-transform:uppercase;letter-spacing:.5px">1st Shift (10:20a–12p)</span><br>`;
+          html += `<span style="font-size:13px;color:var(--gray-800)">${shift.first.join(' · ')}</span>`;
+          html += `</div>`;
+        }
+        
+        if (shift.second) {
+          html += `<div style="margin-bottom:8px">`;
+          html += `<span style="font-size:11px;font-weight:700;color:var(--bryc-blue);text-transform:uppercase;letter-spacing:.5px">2nd Shift (12p–1:45p)</span><br>`;
+          html += `<span style="font-size:13px;color:var(--gray-800)">${shift.second.join(' · ')}</span>`;
+          html += `</div>`;
+        }
+        
+        html += `<ul style="margin:0;padding-left:16px;font-size:12px;color:var(--gray-600);line-height:1.7">`;
+        shift.duties.forEach(d => {
+          html += `<li>${d}</li>`;
+        });
+        html += `</ul>`;
+        html += `</div>`;
+      });
+      html += `</div>`;
+    }
+    
+    html += `</div>`;
+  });
+  
+  html += '</div>';
+  el.innerHTML = html;
+}
+
+
 
 function filterTable(q) {
   const rsvps = (store.rsvps[store.currentEvent]||[]).filter(r=>
