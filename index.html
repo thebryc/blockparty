@@ -404,6 +404,14 @@ body {
 }
 .kiosk-attendee:hover { background:rgba(255,255,255,.22); transform:scale(1.01); }
 .kiosk-attendee.checked { border-color:rgba(255,255,255,.5); background:rgba(255,255,255,.22); cursor:default; }
+.kiosk-attendee.role-mismatch { opacity:.45; cursor:not-allowed; filter:grayscale(.4); }
+.kiosk-attendee.role-mismatch:hover { transform:none; background:rgba(255,255,255,.05); }
+.role-mismatch-toast {
+  background:rgba(0,0,0,.65); color:white; border-radius:12px;
+  padding:14px 18px; margin-bottom:12px; font-size:14px; line-height:1.5;
+  border:1.5px solid rgba(255,100,100,.5); text-align:center;
+  animation: fadeIn .2s ease;
+}
 .k-avatar {
   width:46px; height:46px; border-radius:50%;
   background:rgba(255,255,255,.25);
@@ -448,6 +456,22 @@ body {
 }
 .kiosk-count-item { display:flex; align-items:center; gap:6px; }
 .kiosk-count-num { font-weight:900; font-size:20px; color:white; }
+
+.wi-role-btn {
+  padding:10px 8px;font-size:13px;font-weight:700;border-radius:10px;
+  border:2px solid var(--gray-200);background:var(--gray-50);
+  color:var(--gray-700);cursor:pointer;text-align:center;transition:all .15s;
+}
+.wi-role-btn:hover { border-color:var(--bryc-orange);background:#FFF7ED; }
+.wi-role-btn.selected { border-color:var(--bryc-orange);background:#FFF7ED;color:var(--bryc-orange); }
+
+.tab-pill {
+  padding:5px 12px;font-size:12px;font-weight:700;border-radius:20px;
+  border:2px solid var(--gray-200);background:white;color:var(--gray-500);
+  cursor:pointer;transition:all .15s;white-space:nowrap;
+}
+.tab-pill:hover { border-color:var(--bryc-orange);color:var(--bryc-orange); }
+.tab-pill.active { background:var(--bryc-orange);border-color:var(--bryc-orange);color:white; }
 
 /* Phase 3: Survey Check / Role-specific message */
 .kiosk-result-phase {
@@ -805,9 +829,16 @@ tr:hover td { background:var(--gray-100); }
     <div class="panel">
       <div class="panel-head">
         RSVP List
-        <div class="search-wrap">
-          <span class="search-icon">⌕</span>
-          <input class="search-input" placeholder="Search…" oninput="filterTable(this.value)">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <div style="display:flex;gap:4px" id="checkin-filter-tabs">
+            <button class="tab-pill active" onclick="setCheckinFilter('all',this)">All</button>
+            <button class="tab-pill" onclick="setCheckinFilter('in',this)">✓ Checked In</button>
+            <button class="tab-pill" onclick="setCheckinFilter('out',this)">○ Not Yet</button>
+          </div>
+          <div class="search-wrap">
+            <span class="search-icon">⌕</span>
+            <input class="search-input" placeholder="Search…" oninput="filterTable(this.value)">
+          </div>
         </div>
       </div>
       <div class="table-wrap">
@@ -950,6 +981,16 @@ tr:hover td { background:var(--gray-100); }
           <div class="form-grid form-2">
             <div class="fg"><label class="fl">First Name *</label><input class="fi" id="wi-first" placeholder="First name"></div>
             <div class="fg"><label class="fl">Last Name</label><input class="fi" id="wi-last" placeholder="Last name"></div>
+          </div>
+          <div class="fg" id="wi-role-wrap" style="margin-top:10px">
+            <label class="fl">Who are you? *</label>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:6px" id="wi-role-grid">
+              <button type="button" class="wi-role-btn" data-role="Current BRYC Fellow" onclick="selectWiRole(this)">🌟 Current Fellow</button>
+              <button type="button" class="wi-role-btn" data-role="Prospective Fellow" onclick="selectWiRole(this)">🔍 Prospective Fellow</button>
+              <button type="button" class="wi-role-btn" data-role="Mentor" onclick="selectWiRole(this)">🤝 Mentor</button>
+              <button type="button" class="wi-role-btn" data-role="BRYC Team &amp; Board" onclick="selectWiRole(this)">🏢 Team &amp; Board</button>
+              <button type="button" class="wi-role-btn" data-role="Friend of BRYC" onclick="selectWiRole(this)" style="grid-column:1/-1">💛 Friend of BRYC</button>
+            </div>
           </div>
         </div>
       </div>
@@ -1237,7 +1278,12 @@ function renderTable(rsvps) {
       <td style="color:${r.guardianSurveyDone?'#065F46':'#991B1B'};font-weight:700">${gs}</td>
       <td>${parseInt(r.guestCount)||0}</td>
       <td>${isIn?`<span class="badge badge-green">✓ In</span>`:`<span style="color:var(--gray-400);font-size:12px">—</span>`}</td>
-      <td>${!isIn?`<button class="btn btn-sm btn-outline" onclick="manualCheckin('${r.fullName.replace(/'/g,"\\'")}')">Check In</button>`:''}</td>
+      <td style="white-space:nowrap">
+        ${!isIn
+          ? `<button class="btn btn-sm btn-outline" onclick="manualCheckin('${r.fullName.replace(/'/g,"\\'")}')">Check In</button>`
+          : `<button class="btn btn-sm" style="background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;font-size:11px;padding:4px 10px;border-radius:6px;cursor:pointer" onclick="manualCheckout('${r.fullName.replace(/'/g,"\\'")}')">Check Out</button>`
+        }
+      </td>
     </tr>`;
   }).join('');
 }
@@ -1400,11 +1446,37 @@ function renderTeamRoles() {
 
 
 function filterTable(q) {
-  const rsvps = (store.rsvps[store.currentEvent]||[]).filter(r=>
+  const id = store.currentEvent;
+  const cins = store.checkins[id]||[];
+  let rsvps = (store.rsvps[id]||[]).filter(r=>
     r.fullName.toLowerCase().includes(q.toLowerCase()) ||
     (r.communityRole||'').toLowerCase().includes(q.toLowerCase())
   );
+  if (checkinFilter === 'in') {
+    rsvps = rsvps.filter(r => cins.some(c=>c.name===r.fullName));
+  } else if (checkinFilter === 'out') {
+    rsvps = rsvps.filter(r => !cins.some(c=>c.name===r.fullName));
+  }
   renderTable(rsvps);
+}
+
+let checkinFilter = 'all';
+
+function setCheckinFilter(filter, btn) {
+  checkinFilter = filter;
+  document.querySelectorAll('#checkin-filter-tabs .tab-pill').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  const q = document.querySelector('.search-input')?.value || '';
+  filterTable(q);
+}
+
+function manualCheckout(name) {
+  const id = store.currentEvent;
+  if (!store.checkins[id]) return;
+  store.checkins[id] = store.checkins[id].filter(c => c.name !== name);
+  // checkins intentionally not persisted — session only
+  renderDashboard();
+  toast(`${name.split(' ')[0]} checked out`);
 }
 
 function manualCheckin(name) {
@@ -1472,19 +1544,11 @@ function selectRole(role) {
   setKioskBg(style.bg);
 
   if (role === 'prospect') {
-    // Prospective fellows: direct to Mr. Forrest and Mr. Marcus
-    showKioskPhase('kp-result');
-    document.getElementById('kp-result-inner').innerHTML = `
-      <div class="result-icon">👋</div>
-      <div class="result-title">Welcome, Prospective Fellow!</div>
-      <div class="result-body">Before heading in, please make sure to connect with our team first.</div>
-      <div class="result-card">
-        <div class="result-card-title">First Stop</div>
-        <div class="survey-item"><span class="survey-status">🟠</span><span>Please meet with <strong>Mr. Forrest</strong> and <strong>Mr. Marcus</strong> before joining the event.</span></div>
-      </div>
-      <div class="result-actions">
-        <button class="btn btn-lg" style="background:rgba(255,255,255,.2);color:white;border:2px solid rgba(255,255,255,.4)" onclick="showKioskPhase('kp-role');setKioskBg('kiosk-bg-default');kioskRole=null">← Back</button>
-      </div>`;
+    // Prospective fellows: search/add name FIRST, then get the Forrest/Marcus message
+    showKioskPhase('kp-search');
+    document.getElementById('kiosk-search').value = '';
+    kioskSearch('');
+    setTimeout(()=>document.getElementById('kiosk-search').focus(),100);
     return;
   }
 
@@ -1504,13 +1568,32 @@ function selectRole(role) {
   setTimeout(()=>document.getElementById('kiosk-search').focus(),100);
 }
 
+// Map kiosk role keys → communityRole values stored in RSVP records
+const ROLE_LABEL_MAP = {
+  fellow:  'Current BRYC Fellow',
+  prospect:'Prospective Fellow',
+  mentor:  'Mentor',
+  team:    'BRYC Team & Board',
+  friend:  'Friend of BRYC',
+};
+
+function rolesMatch(kioskKey, communityRole) {
+  if (!kioskKey || !communityRole) return true; // no role set yet, don't restrict
+  const expected = ROLE_LABEL_MAP[kioskKey];
+  if (!expected) return true;
+  // Normalize both sides for loose matching
+  const norm = s => s.toLowerCase().replace(/[^a-z]/g,'');
+  return norm(communityRole).includes(norm(expected)) ||
+         norm(expected).includes(norm(communityRole));
+}
+
 function kioskSearch(q) {
   const id = store.currentEvent;
   const rsvps = store.rsvps[id]||[];
   const cins = store.checkins[id]||[];
   const res = document.getElementById('kiosk-results');
 
-  // Filter by query AND by role if set
+  // Filter by name query first
   let filtered = rsvps;
   if (q.trim()) {
     filtered = rsvps.filter(r=>r.fullName.toLowerCase().includes(q.toLowerCase()));
@@ -1532,21 +1615,49 @@ function kioskSearch(q) {
   res.innerHTML = filtered.map(r=>{
     const isIn = cins.some(c=>c.name===r.fullName);
     const init = r.fullName.split(' ').map(x=>x[0]).join('').slice(0,2).toUpperCase();
-    return `<div class="kiosk-attendee ${isIn?'checked':''}" onclick="${isIn?'':` kioskCheckIn('${r.fullName.replace(/'/g,"\\'")}') `}">
+    const roleOk = rolesMatch(kioskRole, r.communityRole);
+    // Wrong-role entries: shown greyed out with a lock, not tappable
+    const wrongRole = !roleOk;
+    const expectedLabel = ROLE_LABEL_MAP[kioskRole] || '';
+    return `<div class="kiosk-attendee ${isIn?'checked':''} ${wrongRole?'role-mismatch':''}"
+      onclick="${isIn ? '' : wrongRole ? `showRoleMismatch('${r.communityRole.replace(/'/g,"\\'")}','${expectedLabel.replace(/'/g,"\\'")}')` : `kioskCheckIn('${r.fullName.replace(/'/g,"\\'")}')` }">
       <div class="k-avatar">${init}</div>
       <div style="flex:1">
         <div class="k-name">${r.fullName}</div>
         <div class="k-meta">${r.communityRole||''}${r.guestCount>0?' · +'+r.guestCount+' guests':''}</div>
       </div>
-      <div class="k-check">${isIn?'✓':'→'}</div>
+      <div class="k-check">${isIn ? '✓' : wrongRole ? '🔒' : '→'}</div>
     </div>`;
   }).join('');
+}
+
+function showRoleMismatch(actualRole, expectedRole) {
+  // Flash a non-blocking message inside the result area
+  const msg = document.createElement('div');
+  msg.className = 'role-mismatch-toast';
+  msg.innerHTML = `<strong>Wrong sign-in type.</strong><br>
+    You selected <em>${expectedRole}</em> but this person is registered as a <em>${actualRole}</em>.<br>
+    <span style="font-size:12px;opacity:.85">Please go back and choose the correct role.</span>`;
+  const res = document.getElementById('kiosk-results');
+  // Remove any existing mismatch toasts
+  res.querySelectorAll('.role-mismatch-toast').forEach(e=>e.remove());
+  res.insertBefore(msg, res.firstChild);
+  setTimeout(()=>msg.remove(), 4000);
 }
 
 function kioskCheckIn(name) {
   const id = store.currentEvent;
   if (!store.checkins[id]) store.checkins[id]=[];
   if (store.checkins[id].some(c=>c.name===name)) return;
+
+  // Role guard — block check-in if role doesn't match the RSVP record
+  const rsvps = store.rsvps[id]||[];
+  const person = rsvps.find(r=>r.fullName===name);
+  if (person && !rolesMatch(kioskRole, person.communityRole)) {
+    showRoleMismatch(person.communityRole, ROLE_LABEL_MAP[kioskRole]||'');
+    return;
+  }
+
   store.checkins[id].push({name, time:new Date().toISOString(), method:'kiosk', role:kioskRole});
   // DO NOT saveStore() for check-ins — session only per requirement
   kioskName = name;
@@ -1561,6 +1672,23 @@ function showPostCheckIn(name) {
   const rsvps = store.rsvps[id]||[];
   const person = rsvps.find(r=>r.fullName===name);
   showKioskPhase('kp-result');
+
+  if (kioskRole === 'prospect') {
+    document.getElementById('kp-result-inner').innerHTML = `
+      <div class="result-icon">👋</div>
+      <div class="result-title">Welcome, ${name.split(' ')[0]}!</div>
+      <div class="result-body">You're checked in! Head upstairs to <strong>Integrity 3</strong> to connect with our team.</div>
+      <div class="result-card">
+        <div class="result-card-title">📍 Your Next Step</div>
+        <div class="survey-item"><span class="survey-status">🟠</span><span>Meet with <strong>Mr. Forrest</strong> and <strong>Mr. Marcus</strong> upstairs in <strong>Integrity 3</strong> to learn about joining BRYC.</span></div>
+        <div class="survey-item" style="margin-top:10px"><span class="survey-status">🌐</span><span>Apply at <a class="survey-link" href="https://thebryc.org/apply" target="_blank">thebryc.org/apply</a></span></div>
+      </div>
+      <div class="result-actions">
+        <button class="btn btn-lg" style="background:rgba(255,255,255,.2);color:white;border:2px solid rgba(255,255,255,.4)" onclick="resetKiosk()">Check In Another Person</button>
+      </div>`;
+    flashCheckin(name, '🎓');
+    return;
+  }
 
   if (kioskRole === 'fellow') {
     const fellowDone = person?.fellowSurveyDone;
@@ -1637,24 +1765,55 @@ function updateKioskCounts() {
   document.getElementById('k-remain').textContent = Math.max(0,rsvps.length-cins.length);
 }
 
-function showWalkIn() { openModal('walkin-modal'); }
+function showWalkIn() {
+  // Pre-select the role button if we already know it from kiosk flow
+  wiSelectedRole = null;
+  document.querySelectorAll('.wi-role-btn').forEach(b=>b.classList.remove('selected'));
+  if (kioskRole) {
+    const label = ROLE_STYLES[kioskRole]?.label;
+    const btn = document.querySelector(`.wi-role-btn[data-role="${label}"]`);
+    if (btn) { btn.classList.add('selected'); wiSelectedRole = label; }
+  }
+  openModal('walkin-modal');
+}
+
+let wiSelectedRole = null;
+
+function selectWiRole(btn) {
+  document.querySelectorAll('.wi-role-btn').forEach(b=>b.classList.remove('selected'));
+  btn.classList.add('selected');
+  wiSelectedRole = btn.dataset.role;
+  // Sync kioskRole so post-check-in message matches
+  const roleMap = {
+    'Current BRYC Fellow':'fellow',
+    'Prospective Fellow':'prospect',
+    'Mentor':'mentor',
+    'BRYC Team & Board':'team',
+    'Friend of BRYC':'friend'
+  };
+  kioskRole = roleMap[wiSelectedRole] || 'friend';
+}
 
 function addWalkIn() {
   const first = document.getElementById('wi-first').value.trim();
   const last = document.getElementById('wi-last').value.trim();
   if (!first) return toast('First name required', true);
+  const roleLabel = wiSelectedRole || ROLE_STYLES[kioskRole]?.label || 'Walk-In';
+  if (!wiSelectedRole && !kioskRole) return toast('Please select your role', true);
   const fullName = `${first} ${last}`.trim();
   const id = store.currentEvent;
   if (!store.rsvps[id]) store.rsvps[id]=[];
   store.rsvps[id].push({
     fullName, firstName:first, lastName:last,
-    communityRole: ROLE_STYLES[kioskRole]?.label || 'Walk-In',
+    communityRole: roleLabel,
     rsvpStatus:'Attending', guestCount:0, guests:[],
     dietary:'', notes:'Walk-in', timestamp:new Date().toISOString()
   });
   closeModal('walkin-modal');
   document.getElementById('wi-first').value = '';
   document.getElementById('wi-last').value = '';
+  wiSelectedRole = null;
+  document.querySelectorAll('.wi-role-btn').forEach(b=>b.classList.remove('selected'));
   kioskCheckIn(fullName);
 }
 
