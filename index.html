@@ -12,9 +12,49 @@
 </style>
 
 
-  <!-- Firebase SDK (compat version — synchronous, no module race condition) -->
-  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+  <!-- Firebase SDK — tries multiple CDNs, falls back gracefully -->
+  <script>
+  // Try loading Firebase compat SDK from multiple CDNs
+  window._fbLoaded = false;
+  function _loadScript(src, onload, onerror) {
+    var s = document.createElement('script');
+    s.src = src;
+    s.onload = onload;
+    s.onerror = onerror;
+    document.head.appendChild(s);
+  }
+
+  var _fbCDNs = [
+    ['https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js',
+     'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js'],
+    ['https://cdn.jsdelivr.net/npm/firebase@10.12.0/firebase-app-compat.min.js',
+     'https://cdn.jsdelivr.net/npm/firebase@10.12.0/firebase-firestore-compat.min.js'],
+    ['https://unpkg.com/firebase@10.12.0/firebase-app-compat.js',
+     'https://unpkg.com/firebase@10.12.0/firebase-firestore-compat.js'],
+  ];
+
+  function _tryLoadFb(cdnIndex) {
+    if (cdnIndex >= _fbCDNs.length) {
+      console.warn('All Firebase CDNs failed — check-ins will be local only');
+      window._fbFailed = true;
+      return;
+    }
+    var pair = _fbCDNs[cdnIndex];
+    _loadScript(pair[0], function() {
+      _loadScript(pair[1], function() {
+        window._fbLoaded = true;
+        console.log('Firebase SDK loaded from CDN', cdnIndex);
+        // Trigger init now that SDK is ready
+        if (typeof initFirebase === 'function') initFirebase();
+        if (typeof store !== 'undefined' && store.currentEvent && typeof subscribeCheckins === 'function') {
+          subscribeCheckins(store.currentEvent);
+        }
+      }, function() { _tryLoadFb(cdnIndex + 1); });
+    }, function() { _tryLoadFb(cdnIndex + 1); });
+  }
+
+  document.addEventListener('DOMContentLoaded', function() { _tryLoadFb(0); });
+  </script>
 </head>
 <body>
 <style>
@@ -1050,9 +1090,12 @@ function fbConfig() {
 
 function initFirebase() {
   const cfg = fbConfig();
-  if (!cfg) return false;
+  if (!cfg) { console.log('No Firebase config saved yet'); return false; }
+  if (typeof firebase === 'undefined') {
+    console.warn('Firebase SDK not loaded yet — will retry when SDK loads');
+    return false;
+  }
   try {
-    // Delete any existing app first to avoid "already exists" error
     const existing = firebase.apps.find(a => a.name === 'bryc-hub');
     if (existing) {
       _db = existing.firestore();
@@ -1060,12 +1103,16 @@ function initFirebase() {
       const app = firebase.initializeApp(cfg, 'bryc-hub');
       _db = app.firestore();
     }
-    // Enable offline persistence so check-ins survive brief network drops
-    _db.enablePersistence({ synchronizeTabs: true }).catch(() => {});
-    console.log('Firebase connected ✓');
+    _db.enablePersistence({ synchronizeTabs: true }).catch(e => {
+      // Persistence fails in private/incognito — that's fine
+      console.log('Persistence not available:', e.code);
+    });
+    console.log('✓ Firebase connected');
+    toast('Firebase connected ✓');
     return true;
   } catch(e) {
     console.error('Firebase init failed:', e);
+    toast('Firebase error: ' + e.message, true);
     return false;
   }
 }
@@ -1137,8 +1184,8 @@ function fbRemoveCheckin(eventId, name) {
      .catch(e => console.error('Firestore delete failed:', e));
 }
 
-// Auto-init on page load
-window.addEventListener('DOMContentLoaded', () => { initFirebase(); });
+// initFirebase is called by the SDK loader above once scripts load
+// (see _tryLoadFb in the <head> script block)
 
 // ──────────────────────────────────────────────────────
 // AUTH  — @thebryc.org only
