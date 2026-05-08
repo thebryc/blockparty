@@ -12,17 +12,9 @@
 </style>
 
 
-  <!-- Firebase SDK -->
-  <script type="module">
-    import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
-    import {
-      getFirestore, collection, doc, setDoc, deleteDoc,
-      onSnapshot, getDocs, serverTimestamp
-    } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
-
-    // Expose to global scope so non-module scripts can use them
-    window._firebase = { initializeApp, getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, getDocs, serverTimestamp };
-  </script>
+  <!-- Firebase SDK (compat version — synchronous, no module race condition) -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
 </head>
 <body>
 <style>
@@ -1043,10 +1035,10 @@ function saveStore() {
 loadStore();
 
 // ──────────────────────────────────────────────────────
-// FIREBASE — real-time check-in sync
+// FIREBASE — real-time check-in sync (compat SDK)
 // ──────────────────────────────────────────────────────
 let _db = null;
-let _unsubscribers = {};  // eventId → unsubscribe fn
+let _unsubscribers = {};
 
 function fbConfig() {
   try {
@@ -1056,102 +1048,97 @@ function fbConfig() {
   } catch(e) { return null; }
 }
 
-async function initFirebase() {
+function initFirebase() {
   const cfg = fbConfig();
-  if (!cfg || !window._firebase) return;
+  if (!cfg) return false;
   try {
-    const { initializeApp, getFirestore } = window._firebase;
-    // Avoid re-initializing if already done
-    if (!_db) {
-      const app = initializeApp(cfg, cfg.projectId || 'bryc-hub');
-      _db = getFirestore(app);
-      console.log('Firebase connected ✓');
-      toast('Firebase connected ✓');
+    // Delete any existing app first to avoid "already exists" error
+    const existing = firebase.apps.find(a => a.name === 'bryc-hub');
+    if (existing) {
+      _db = existing.firestore();
+    } else {
+      const app = firebase.initializeApp(cfg, 'bryc-hub');
+      _db = app.firestore();
     }
+    // Enable offline persistence so check-ins survive brief network drops
+    _db.enablePersistence({ synchronizeTabs: true }).catch(() => {});
+    console.log('Firebase connected ✓');
+    return true;
   } catch(e) {
-    // App already initialized — get existing instance
-    try {
-      const { getFirestore } = window._firebase;
-      if (!_db) _db = getFirestore();
-    } catch(e2) { console.warn('Firebase init error:', e2); }
+    console.error('Firebase init failed:', e);
+    return false;
   }
 }
 
 // Subscribe to real-time check-in updates for an event
 function subscribeCheckins(eventId) {
-  if (!_db) return;
-  // Unsubscribe from previous listener for this event
-  if (_unsubscribers[eventId]) { _unsubscribers[eventId](); }
-  const { collection, onSnapshot } = window._firebase;
-  const ref = collection(_db, 'checkins', eventId, 'attendees');
-  _unsubscribers[eventId] = onSnapshot(ref, snapshot => {
-    store.checkins[eventId] = [];
-    snapshot.forEach(docSnap => {
-      store.checkins[eventId].push(docSnap.data());
+  // Init Firebase if not already done
+  if (!_db) {
+    const ok = initFirebase();
+    if (!ok) { console.warn('Firebase not configured — check-ins local only'); return; }
+  }
+  // Unsubscribe any existing listener
+  if (_unsubscribers[eventId]) { _unsubscribers[eventId](); delete _unsubscribers[eventId]; }
+  
+  _unsubscribers[eventId] = _db
+    .collection('checkins').doc(eventId).collection('attendees')
+    .onSnapshot(snapshot => {
+      store.checkins[eventId] = [];
+      snapshot.forEach(d => store.checkins[eventId].push(d.data()));
+      if (store.currentEvent === eventId) {
+        renderDashboard();
+        updateKioskCounts();
+      }
+      console.log(`✓ Synced ${store.checkins[eventId].length} check-ins for ${eventId}`);
+    }, err => {
+      console.error('Firestore listener error:', err);
+      toast('⚠️ Firestore sync error — check console', true);
     });
-    // Re-render if we're on the dashboard for this event
-    if (store.currentEvent === eventId) {
-      renderDashboard();
-      updateKioskCounts();
-    }
-    console.log(`Check-ins synced: ${store.checkins[eventId].length} for ${eventId}`);
-  }, err => {
-    console.warn('Firestore listener error:', err);
-  });
 }
 
-// Write a single check-in to Firestore
-async function fbAddCheckin(eventId, checkin) {
-  if (!_db) {
-    // Fallback: store locally only
-    if (!store.checkins[eventId]) store.checkins[eventId] = [];
-    if (!store.checkins[eventId].some(c => c.name === checkin.name)) {
-      store.checkins[eventId].push(checkin);
-    }
+// Write a check-in to Firestore
+function fbAddCheckin(eventId, checkin) {
+  // Optimistic local update so UI is instant
+  if (!store.checkins[eventId]) store.checkins[eventId] = [];
+  if (!store.checkins[eventId].some(c => c.name === checkin.name)) {
+    store.checkins[eventId].push(checkin);
+  }
+
+  if (!_db && !initFirebase()) {
+    console.warn('No Firebase — check-in saved locally only');
+    renderDashboard(); updateKioskCounts();
     return;
   }
-  try {
-    const { doc, setDoc, serverTimestamp } = window._firebase;
-    const safeName = checkin.name.replace(/[^a-zA-Z0-9_-]/g, '_');
-    const ref = doc(_db, 'checkins', eventId, 'attendees', safeName);
-    await setDoc(ref, { ...checkin, syncedAt: serverTimestamp() });
-  } catch(e) {
-    console.warn('Firestore write error:', e);
-    // Fallback to local
-    if (!store.checkins[eventId]) store.checkins[eventId] = [];
-    if (!store.checkins[eventId].some(c => c.name === checkin.name)) {
-      store.checkins[eventId].push(checkin);
-    }
-  }
+  const safeName = checkin.name.replace(/[^a-zA-Z0-9_-]/g, '_');
+  _db.collection('checkins').doc(eventId)
+     .collection('attendees').doc(safeName)
+     .set({ ...checkin, syncedAt: firebase.firestore.FieldValue.serverTimestamp() })
+     .then(() => console.log('✓ Check-in saved:', checkin.name))
+     .catch(e => {
+       console.error('Firestore write failed:', e);
+       toast('⚠️ Check-in saved locally but not synced — check Firestore rules', true);
+     });
 }
 
 // Remove a check-in from Firestore
-async function fbRemoveCheckin(eventId, name) {
-  if (!_db) {
-    if (store.checkins[eventId]) {
-      store.checkins[eventId] = store.checkins[eventId].filter(c => c.name !== name);
-    }
-    return;
+function fbRemoveCheckin(eventId, name) {
+  // Optimistic local update
+  if (store.checkins[eventId]) {
+    store.checkins[eventId] = store.checkins[eventId].filter(c => c.name !== name);
   }
-  try {
-    const { doc, deleteDoc } = window._firebase;
-    const safeName = name.replace(/[^a-zA-Z0-9_-]/g, '_');
-    const ref = doc(_db, 'checkins', eventId, 'attendees', safeName);
-    await deleteDoc(ref);
-  } catch(e) {
-    console.warn('Firestore delete error:', e);
-    if (store.checkins[eventId]) {
-      store.checkins[eventId] = store.checkins[eventId].filter(c => c.name !== name);
-      renderDashboard();
-    }
-  }
+  renderDashboard();
+
+  if (!_db && !initFirebase()) return;
+  const safeName = name.replace(/[^a-zA-Z0-9_-]/g, '_');
+  _db.collection('checkins').doc(eventId)
+     .collection('attendees').doc(safeName)
+     .delete()
+     .then(() => console.log('✓ Check-out saved:', name))
+     .catch(e => console.error('Firestore delete failed:', e));
 }
 
-// Init Firebase once settings are loaded, and whenever saveFirebase() is called
-window.addEventListener('DOMContentLoaded', () => {
-  // Small delay to let _firebase module load
-  setTimeout(initFirebase, 800);
-});
+// Auto-init on page load
+window.addEventListener('DOMContentLoaded', () => { initFirebase(); });
 
 // ──────────────────────────────────────────────────────
 // AUTH  — @thebryc.org only
@@ -1772,7 +1759,7 @@ function kioskCheckIn(name) {
     return;
   }
 
-  const checkin = {name, time:new Date().toISOString(), method:'kiosk', role:kioskRole};
+  const checkin = {name, time:new Date().toISOString(), method:'kiosk', role:kioskRole||'unknown'};
   fbAddCheckin(id, checkin);  // persists to Firestore + syncs to all devices
   kioskName = name;
   updateKioskCounts();
@@ -1977,9 +1964,9 @@ function saveSheetSettings() {
 function saveFirebase() {
   store.settings.firebaseConfig = document.getElementById('s-firebase').value.trim();
   _db = null;  // reset so initFirebase() re-connects with new config
-  initFirebase().then(() => {
-    if (store.currentEvent) subscribeCheckins(store.currentEvent);
-  });
+  const ok = initFirebase();
+  if (ok && store.currentEvent) subscribeCheckins(store.currentEvent);
+  if (ok) toast('Firebase connected ✓');
   saveStore(); toast('Firebase config saved!');
 }
 function testSync() { toast('Add your Sheet ID + OAuth Client ID in Settings to enable live sync.'); }
