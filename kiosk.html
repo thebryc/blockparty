@@ -38,11 +38,8 @@
       _loadScript(pair[1], function() {
         window._fbLoaded = true;
         console.log('Firebase SDK loaded from CDN', cdnIndex);
-        // Trigger init now that SDK is ready
-        if (typeof initFirebase === 'function') initFirebase();
-        if (typeof store !== 'undefined' && store.currentEvent && typeof subscribeCheckins === 'function') {
-          subscribeCheckins(store.currentEvent);
-        }
+        // Boot the kiosk now that SDK is ready (defined in body script).
+        if (typeof window._onFbReady === 'function') window._onFbReady();
       }, function() { _tryLoadFb(cdnIndex + 1); });
     }, function() { _tryLoadFb(cdnIndex + 1); });
   }
@@ -842,7 +839,7 @@ function showResult(name, person) {
     document.getElementById('kp-result-inner').innerHTML = `
       <div class="result-icon">${allDone?'🎉':'⚠️'}</div>
       <div class="result-title">${allDone ? `Welcome, ${firstName}!` : `Almost there, ${firstName}!`}</div>
-      <div class="result-body">${allDone ? 'You're all set — enjoy the Block Party! 🎊' : 'You're checked in, but a couple things need your attention:'}</div>
+      <div class="result-body">${allDone ? "You're all set — enjoy the Block Party! 🎊" : "You're checked in, but a couple things need your attention:"}</div>
       <div class="result-card">
         <div class="result-card-title">Survey Status</div>
         <div class="survey-item">
@@ -948,22 +945,28 @@ function toast(msg, isError) {
 }
 
 // ── BOOT ───────────────────────────────────────────────────────────────────
-// Called by the Firebase CDN loader once SDK scripts are ready
-window._fbKioskReady = function() { init(); };
+// Single-shot boot — guards against the recursion bug where init() called
+// initFirebase() which was wrapped to call init() again, looping forever.
+let _kioskBooted = false;
+function bootKiosk() {
+  if (_kioskBooted) return;
+  _kioskBooted = true;
+  console.log('Booting kiosk…');
+  try { init(); } catch(e) { console.error('Boot error:', e); showError('Startup error: ' + (e.message||e)); }
+}
 
-// Hook into the loader's initFirebase call
-const _origInitFb = window.initFirebase;
-window.initFirebase = function() {
-  if (typeof _origInitFb === 'function') _origInitFb();
-  // Only init once
-  if (document.getElementById('loading-screen').style.display !== 'none') init();
-};
+// The CDN loader at the top of <head> calls this once the Firebase SDK has loaded.
+window._onFbReady = bootKiosk;
 
-// Hard fallback — if SDK never loads after 6s, try anyway (may use localStorage)
+// If the SDK already loaded before this script ran, boot immediately.
+if (window._fbLoaded) bootKiosk();
+
+// Hard fallback — if all CDNs fail, boot anyway after 6 seconds so the user
+// doesn't stare at a spinner forever. init() falls back to localStorage.
 setTimeout(() => {
-  if (document.getElementById('loading-screen').style.display !== 'none') {
-    console.warn('Firebase SDK timeout — attempting init anyway');
-    init();
+  if (!_kioskBooted) {
+    console.warn('Firebase SDK timeout — booting offline');
+    bootKiosk();
   }
 }, 6000);
 </script>

@@ -682,6 +682,30 @@ tr:hover td { background:var(--gray-100); }
 @keyframes toastIn { from{transform:translateY(16px);opacity:0} to{transform:translateY(0);opacity:1} }
 @keyframes toastOut { from{opacity:1} to{opacity:0;transform:translateY(10px)} }
 
+/* ── SYNC STATUS PILL ── */
+.sync-pill {
+  display:inline-flex; align-items:center; gap:6px;
+  padding:5px 11px; border-radius:999px;
+  font-size:11px; font-weight:700; letter-spacing:.02em;
+  background:#F3F4F6; color:#374151;
+  border:1px solid #E5E7EB;
+  cursor:default;
+}
+.sync-pill .sync-dot {
+  width:8px; height:8px; border-radius:50%; background:#9CA3AF;
+}
+.sync-pill.connected { background:#ECFDF5; color:#065F46; border-color:#A7F3D0; }
+.sync-pill.connected .sync-dot { background:#10B981; box-shadow:0 0 0 0 rgba(16,185,129,.5); animation:pulseGreen 2s infinite; }
+.sync-pill.connecting { background:#FFFBEB; color:#92400E; border-color:#FDE68A; }
+.sync-pill.connecting .sync-dot { background:#F59E0B; }
+.sync-pill.error { background:#FEF2F2; color:#991B1B; border-color:#FECACA; cursor:pointer; }
+.sync-pill.error .sync-dot { background:#EF4444; }
+@keyframes pulseGreen {
+  0% { box-shadow:0 0 0 0 rgba(16,185,129,.5); }
+  70% { box-shadow:0 0 0 6px rgba(16,185,129,0); }
+  100% { box-shadow:0 0 0 0 rgba(16,185,129,0); }
+}
+
 /* ── ROLE BARS ── */
 .role-bars { display:flex; flex-direction:column; gap:10px; }
 .rb-row { display:flex; flex-direction:column; gap:4px; }
@@ -825,6 +849,9 @@ tr:hover td { background:var(--gray-100); }
     </div>
   </div>
   <div class="topbar-actions">
+    <span class="sync-pill" id="sync-pill" onclick="onSyncPillClick()" title="Click for details">
+      <span class="sync-dot"></span><span id="sync-pill-label">Connecting…</span>
+    </span>
     <button class="topbar-btn" onclick="showView('settings-view')">⚙ Settings</button>
     <button class="topbar-btn" onclick="logout()" style="opacity:.65">Sign Out</button>
   </div>
@@ -971,11 +998,16 @@ tr:hover td { background:var(--gray-100); }
     </div>
     <div class="settings-block">
       <h3>🔥 Firebase Configuration</h3>
+      <div class="fh" style="margin-bottom:10px">A working config is hardcoded — you only need this if pointing at a different project. Use the test button below to confirm Firestore is reachable and rules allow writes.</div>
       <div class="fg">
-        <label class="fl">Firebase Config JSON</label>
+        <label class="fl">Firebase Config JSON (optional override)</label>
         <textarea class="ft" id="s-firebase" rows="6" placeholder="Paste your firebaseConfig here..."></textarea>
       </div>
-      <button class="btn btn-black" style="margin-top:10px" onclick="saveFirebase()">Save Firebase Config</button>
+      <div style="display:flex;gap:10px;margin-top:10px;flex-wrap:wrap">
+        <button class="btn btn-black" onclick="saveFirebase()">Save Firebase Config</button>
+        <button class="btn btn-outline" onclick="testFirestore()">🔬 Test Firestore</button>
+      </div>
+      <div id="fb-test-result" style="margin-top:12px;font-size:13px;line-height:1.5"></div>
     </div>
     <div class="settings-block">
       <h3>📦 Data Management</h3>
@@ -1107,14 +1139,15 @@ const FIREBASE_CONFIG = {
 };
 
 function initFirebase() {
-  if (typeof firebase === 'undefined') { console.warn('Firebase SDK not loaded yet'); return false; }
+  if (typeof firebase === 'undefined') { console.warn('Firebase SDK not loaded yet'); setSyncStatus('error','Firebase SDK not loaded — check network or refresh'); return false; }
   try {
     const existing = firebase.apps.find(a => a.name === 'bryc-hub');
     _db = existing ? existing.firestore() : firebase.initializeApp(FIREBASE_CONFIG, 'bryc-hub').firestore();
     _db.enablePersistence({ synchronizeTabs:true }).catch(()=>{});
     console.log('✓ Firebase connected');
+    setSyncStatus('connecting','Loading data…');
     return true;
-  } catch(e) { console.error('Firebase init:', e); toast('Firebase error: ' + e.message, true); return false; }
+  } catch(e) { console.error('Firebase init:', e); toast('Firebase error: ' + e.message, true); setSyncStatus('error','Init failed: '+e.message); return false; }
 }
 
 // Subscribe to ALL app data — events + rsvps — from Firestore
@@ -1139,16 +1172,18 @@ function subscribeAllData(onReady) {
       snap.forEach(d => store.events.push({ id: d.id, ...d.data() }));
       store.events.sort((a,b) => (a.date||'') > (b.date||'') ? 1 : -1);
       eventsReady = true; check();
+      setSyncStatus('connected','Events synced · ' + new Date().toLocaleTimeString());
       if (document.getElementById('events-view')?.classList.contains('active')) renderEvents();
-    }, e => { console.error('Events:', e); eventsReady = true; check(); })
+    }, e => { console.error('Events:', e); setSyncStatus('error', (e.code||'') + ' on events: ' + (e.message||e)); eventsReady = true; check(); })
   );
 
   _dataUnsubscribers.push(
     _db.collection('rsvps').onSnapshot(snap => {
       snap.forEach(d => { store.rsvps[d.id] = d.data().list || []; });
       rsvpsReady = true; check();
+      setSyncStatus('connected','RSVPs synced · ' + new Date().toLocaleTimeString());
       if (store.currentEvent) renderDashboard();
-    }, e => { console.error('RSVPs:', e); rsvpsReady = true; check(); })
+    }, e => { console.error('RSVPs:', e); setSyncStatus('error', (e.code||'') + ' on rsvps: ' + (e.message||e)); rsvpsReady = true; check(); })
   );
 
   // Timeout fallback — if Firestore is slow, show what we have after 5s
@@ -1169,7 +1204,9 @@ function subscribeCheckins(eventId) {
 
 // Save event to Firestore
 function fbSaveEvent(evt) {
-  if (_db) _db.collection('events').doc(evt.id).set(evt).catch(e => console.error('Save event:', e));
+  if (_db) _db.collection('events').doc(evt.id).set(evt)
+    .then(() => setSyncStatus('connected','Event saved · '+new Date().toLocaleTimeString()))
+    .catch(e => { console.error('Save event:', e); toast('⚠️ Event NOT synced ('+(e.code||'error')+')', true); setSyncStatus('error','Event save failed: '+(e.code||e.message)); });
   else saveStore();
 }
 
@@ -1178,8 +1215,8 @@ function fbSaveRsvps(eventId, list) {
   if (!_db) { saveStore(); return; }
   _db.collection('rsvps').doc(eventId)
     .set({ list, updatedAt: firebase.firestore.FieldValue.serverTimestamp() })
-    .then(() => console.log('✓ RSVPs saved:', list.length))
-    .catch(e => { console.error('Save RSVPs:', e); toast('⚠️ RSVPs not synced: ' + e.code, true); });
+    .then(() => { console.log('✓ RSVPs saved:', list.length); setSyncStatus('connected','RSVPs saved · '+list.length+' records'); })
+    .catch(e => { console.error('Save RSVPs:', e); toast('⚠️ RSVPs NOT synced ('+(e.code||'error')+') — see Settings → Test Firestore', true); setSyncStatus('error','RSVP save failed: '+(e.code||e.message)); });
 }
 
 function fbAddCheckin(eventId, checkin) {
@@ -1190,7 +1227,8 @@ function fbAddCheckin(eventId, checkin) {
   const safe = checkin.name.replace(/[^a-zA-Z0-9_-]/g, '_');
   _db.collection('checkins').doc(eventId).collection('attendees').doc(safe)
     .set({ ...checkin, syncedAt: firebase.firestore.FieldValue.serverTimestamp() })
-    .catch(e => { console.error('Check-in:', e); toast('⚠️ Check-in not synced: ' + e.code, true); });
+    .then(() => setSyncStatus('connected','Check-in saved · '+new Date().toLocaleTimeString()))
+    .catch(e => { console.error('Check-in:', e); toast('⚠️ Check-in NOT synced ('+(e.code||'error')+') — see Settings → Test Firestore', true); setSyncStatus('error', 'Check-in failed: ' + (e.code||e.message)); });
 }
 
 function fbRemoveCheckin(eventId, name) {
@@ -1199,7 +1237,87 @@ function fbRemoveCheckin(eventId, name) {
   renderDashboard();
   if (!_db && !initFirebase()) return;
   const safe = name.replace(/[^a-zA-Z0-9_-]/g, '_');
-  _db.collection('checkins').doc(eventId).collection('attendees').doc(safe).delete().catch(e => console.error('Check-out:', e));
+  _db.collection('checkins').doc(eventId).collection('attendees').doc(safe).delete()
+    .then(() => setSyncStatus('connected','Check-out saved · '+new Date().toLocaleTimeString()))
+    .catch(e => { console.error('Check-out:', e); toast('⚠️ Check-out NOT synced ('+(e.code||'error')+')', true); setSyncStatus('error','Check-out failed: '+(e.code||e.message)); });
+}
+
+// ── SYNC STATUS PILL ────────────────────────────────────────────────────────
+let _lastSyncError = '';
+function setSyncStatus(state, detail) {
+  const pill = document.getElementById('sync-pill');
+  const label = document.getElementById('sync-pill-label');
+  if (!pill || !label) return;
+  pill.classList.remove('connected','connecting','error');
+  if (state === 'connected')      { pill.classList.add('connected');  label.textContent = 'Synced'; pill.title = detail || 'Live updates on'; _lastSyncError = ''; }
+  else if (state === 'connecting'){ pill.classList.add('connecting'); label.textContent = 'Connecting…'; pill.title = detail || ''; }
+  else                            { pill.classList.add('error');      label.textContent = 'Offline'; pill.title = detail || 'Click for details'; _lastSyncError = detail || ''; }
+}
+function onSyncPillClick() {
+  if (_lastSyncError) {
+    alert('Sync issue:\n\n' + _lastSyncError + '\n\nOpen Settings → Test Firestore for a full diagnostic.');
+  } else {
+    showView('settings-view');
+  }
+}
+
+// ── TEST FIRESTORE — write/read/delete + clear error report ─────────────────
+async function testFirestore() {
+  const out = document.getElementById('fb-test-result');
+  out.innerHTML = '<span style="color:#92400E">⏳ Running test…</span>';
+  if (typeof firebase === 'undefined') {
+    out.innerHTML = '<div style="background:#FEF2F2;border:1px solid #FECACA;color:#991B1B;padding:12px;border-radius:8px"><b>❌ Firebase SDK not loaded.</b><br>The Firebase script tags failed to load from all three CDNs (gstatic, jsdelivr, unpkg). Check your network or try a different browser.</div>';
+    setSyncStatus('error','Firebase SDK not loaded');
+    return;
+  }
+  if (!_db) initFirebase();
+  if (!_db) {
+    out.innerHTML = '<div style="background:#FEF2F2;border:1px solid #FECACA;color:#991B1B;padding:12px;border-radius:8px"><b>❌ Firestore not initialized.</b><br>Try saving the Firebase config and reloading the page.</div>';
+    setSyncStatus('error','Firestore not initialized');
+    return;
+  }
+  const id = 'self-test-' + Date.now();
+  const ref = _db.collection('_diag').doc(id);
+  const log = [];
+  const t0 = Date.now();
+  try {
+    log.push('1️⃣ Writing test doc…');
+    await ref.set({ at: new Date().toISOString(), msg: 'hello from BRYC hub' });
+    log.push('✅ Write OK (' + (Date.now()-t0) + 'ms)');
+    const snap = await ref.get();
+    log.push(snap.exists ? '✅ Read OK — got data back' : '⚠️ Read returned no document');
+    await ref.delete();
+    log.push('✅ Delete OK');
+    log.push('');
+    log.push('🎉 <b>All good — Firestore is working.</b> Check-ins should sync across all devices.');
+    out.innerHTML = '<div style="background:#ECFDF5;border:1px solid #A7F3D0;color:#065F46;padding:12px;border-radius:8px;white-space:pre-wrap;font-family:ui-monospace,monospace;font-size:12px">' + log.join('\n') + '</div>';
+    setSyncStatus('connected','Test passed at ' + new Date().toLocaleTimeString());
+  } catch(e) {
+    log.push('❌ Failed: ' + (e.code || '') + ' — ' + (e.message || e));
+    log.push('');
+    if (e.code === 'permission-denied') {
+      log.push('🔐 <b>Firestore rules are blocking writes.</b>');
+      log.push('Fix: Firebase Console → Firestore Database → Rules tab → replace everything with the rules below, then click <b>Publish</b>:');
+      log.push('');
+      log.push("rules_version = '2';");
+      log.push('service cloud.firestore {');
+      log.push('  match /databases/{database}/documents {');
+      log.push('    match /events/{doc} { allow read, write: if true; }');
+      log.push('    match /rsvps/{doc} { allow read, write: if true; }');
+      log.push('    match /checkins/{e}/attendees/{doc} { allow read, write: if true; }');
+      log.push('    match /_diag/{doc} { allow read, write: if true; }');
+      log.push('  }');
+      log.push('}');
+    } else if (e.code === 'unavailable' || (e.message||'').includes('offline')) {
+      log.push('📡 <b>No network connection to Firestore.</b> Check Wi-Fi.');
+    } else if (e.code === 'failed-precondition') {
+      log.push('⚠️ Firestore database may not be created yet. Firebase Console → Firestore Database → Create database (Standard, Test mode).');
+    } else {
+      log.push('Unexpected error — copy this and share it.');
+    }
+    out.innerHTML = '<div style="background:#FEF2F2;border:1px solid #FECACA;color:#991B1B;padding:12px;border-radius:8px;white-space:pre-wrap;font-family:ui-monospace,monospace;font-size:12px">' + log.join('\n') + '</div>';
+    setSyncStatus('error', (e.code||'error') + ': ' + (e.message||e));
+  }
 }
 
 function _loadLegacy() {
@@ -2125,9 +2243,9 @@ function toast(msg, err=false) {
   const wrap=document.getElementById('toasts');
   const el=document.createElement('div');
   el.className=`toast${err?' err':''}`;
-  el.innerHTML=`${err?'⚠':'✓'} ${msg}`;
+  el.innerHTML=`${err?'⚠':'✓'} ${msg}` + (err ? ' <span style="opacity:.7;cursor:pointer;margin-left:8px" onclick="this.parentElement.remove()">✕</span>' : '');
   wrap.appendChild(el);
-  setTimeout(()=>el.remove(),3200);
+  setTimeout(()=>el.remove(), err ? 15000 : 3200);
 }
 
 function fmtTime(t) {
