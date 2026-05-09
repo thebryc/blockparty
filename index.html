@@ -1892,17 +1892,11 @@ const ROLE_STYLES = {
 function enterKiosk() {
   const evt = store.events.find(e=>e.id===store.currentEvent);
   if (!evt) return toast('No event selected', true);
-  document.getElementById('kiosk-event-name').textContent = evt.name;
-  const d = new Date(evt.date+'T00:00:00');
-  document.getElementById('kiosk-tagline').textContent =
-    d.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'})+
-    (evt.location?' · '+evt.location:'');
-  // Reset to phase 1
-  kioskRole = null; kioskName = null;
-  showKioskPhase('kp-role');
-  setKioskBg('kiosk-bg-default');
-  document.getElementById('kiosk-screen').classList.add('active');
-  updateKioskCounts();
+  // Open the same standalone kiosk.html that the QR code points to —
+  // so the in-house tablet sees the same UI Fellows do on their phones.
+  const base = window.location.href.replace(/index\.html.*$/, '').replace(/\?.*$/, '');
+  const url = base + 'kiosk.html?event=' + encodeURIComponent(evt.id);
+  window.open(url, '_blank');
 }
 
 function exitKiosk() {
