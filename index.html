@@ -1529,11 +1529,16 @@ function openDash(id) {
     d.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'}) +
     (evt.time?' · '+fmtTime(evt.time):'') +
     (evt.location?' · '+evt.location:'');
+  // Start the live check-in listener for THIS event so kiosk/phone check-ins
+  // appear on the dashboard in real time. Without this, the dashboard reads
+  // from the local store only and won't see writes from other devices.
+  if (typeof subscribeCheckins === 'function') subscribeCheckins(id);
   showView('dashboard-view');
 }
 
 function openKioskDirect(id) {
   store.currentEvent = id;
+  if (typeof subscribeCheckins === 'function') subscribeCheckins(id);
   enterKiosk();
 }
 
