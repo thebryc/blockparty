@@ -1006,6 +1006,7 @@ tr:hover td { background:var(--gray-100); }
       <div style="display:flex;gap:10px;margin-top:10px;flex-wrap:wrap">
         <button class="btn btn-black" onclick="saveFirebase()">Save Firebase Config</button>
         <button class="btn btn-outline" onclick="testFirestore()">🔬 Test Firestore</button>
+        <button class="btn btn-outline" onclick="pushLocalToFirestore()" title="Push events + RSVPs from this device into Firestore so other devices can see them">⬆ Push Local Data to Firestore</button>
       </div>
       <div id="fb-test-result" style="margin-top:12px;font-size:13px;line-height:1.5"></div>
     </div>
@@ -1213,6 +1214,12 @@ function fbSaveEvent(evt) {
 // Save full RSVP list for an event to Firestore
 function fbSaveRsvps(eventId, list) {
   if (!_db) { saveStore(); return; }
+  // Make sure the parent event exists in Firestore too, otherwise other devices
+  // (including the kiosk page) will see "no events found" even though RSVPs are synced.
+  const evt = store.events.find(e => e.id === eventId);
+  if (evt) {
+    _db.collection('events').doc(eventId).set(evt).catch(e => console.error('Auto event push:', e));
+  }
   _db.collection('rsvps').doc(eventId)
     .set({ list, updatedAt: firebase.firestore.FieldValue.serverTimestamp() })
     .then(() => { console.log('✓ RSVPs saved:', list.length); setSyncStatus('connected','RSVPs saved · '+list.length+' records'); })
@@ -1317,6 +1324,54 @@ async function testFirestore() {
     }
     out.innerHTML = '<div style="background:#FEF2F2;border:1px solid #FECACA;color:#991B1B;padding:12px;border-radius:8px;white-space:pre-wrap;font-family:ui-monospace,monospace;font-size:12px">' + log.join('\n') + '</div>';
     setSyncStatus('error', (e.code||'error') + ': ' + (e.message||e));
+  }
+}
+
+// ── PUSH LOCAL DATA TO FIRESTORE ─────────────────────────────────────────────
+// One-shot recovery: take whatever events + RSVPs exist on this device
+// and write them to Firestore so the kiosk and other devices can see them.
+async function pushLocalToFirestore() {
+  const out = document.getElementById('fb-test-result');
+  out.innerHTML = '<span style="color:#92400E">⏳ Pushing local data to Firestore…</span>';
+  if (!_db && !initFirebase()) {
+    out.innerHTML = '<div style="background:#FEF2F2;border:1px solid #FECACA;color:#991B1B;padding:12px;border-radius:8px"><b>❌ Firestore not connected.</b><br>Run Test Firestore first to confirm the connection.</div>';
+    return;
+  }
+  const events = store.events || [];
+  const rsvps  = store.rsvps  || {};
+  if (!events.length) {
+    out.innerHTML = '<div style="background:#FFFBEB;border:1px solid #FDE68A;color:#92400E;padding:12px;border-radius:8px"><b>⚠️ Nothing to push.</b><br>This device has no events to upload. Create or import an event first.</div>';
+    return;
+  }
+  const log = [];
+  let ok = 0, fail = 0;
+  try {
+    for (const evt of events) {
+      try {
+        await _db.collection('events').doc(evt.id).set(evt);
+        log.push('✅ Event "' + (evt.name||evt.id) + '" pushed');
+        ok++;
+        const list = rsvps[evt.id] || [];
+        if (list.length) {
+          await _db.collection('rsvps').doc(evt.id).set({
+            list,
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+          });
+          log.push('   └─ ' + list.length + ' RSVPs pushed');
+        }
+      } catch(e) {
+        log.push('❌ Failed event "' + (evt.name||evt.id) + '": ' + (e.code || e.message));
+        fail++;
+      }
+    }
+    log.push('');
+    log.push('Done: ' + ok + ' event(s) pushed, ' + fail + ' failed.');
+    log.push('Other devices and the kiosk page should now see the data.');
+    const color = fail ? {bg:'#FEF2F2',br:'#FECACA',c:'#991B1B'} : {bg:'#ECFDF5',br:'#A7F3D0',c:'#065F46'};
+    out.innerHTML = '<div style="background:'+color.bg+';border:1px solid '+color.br+';color:'+color.c+';padding:12px;border-radius:8px;white-space:pre-wrap;font-family:ui-monospace,monospace;font-size:12px">' + log.join('\n') + '</div>';
+    if (!fail) toast('Local data pushed — ' + ok + ' event(s) live across all devices');
+  } catch(e) {
+    out.innerHTML = '<div style="background:#FEF2F2;border:1px solid #FECACA;color:#991B1B;padding:12px;border-radius:8px"><b>❌ Push failed:</b><br>' + (e.code || '') + ' — ' + (e.message || e) + '</div>';
   }
 }
 
