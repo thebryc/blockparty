@@ -519,8 +519,14 @@ function fbConfig() {
     const data = loadData();
     const cfg = data?.settings?.firebaseConfig;
     if (!cfg) return null;
-    return typeof cfg === 'string' ? JSON.parse(cfg) : cfg;
-  } catch(e) { return null; }
+    if (typeof cfg === 'object') return cfg;
+    try { return JSON.parse(cfg); } catch(e) {}
+    const json = cfg
+      .replace(/\/\*.*?\*\//gs, '')
+      .replace(/([{,]\s*)([a-zA-Z_][\w]*)\s*:/g, '$1"$2":')
+      .replace(/'/g, '"');
+    return JSON.parse(json);
+  } catch(e) { console.error('fbConfig parse error:', e); return null; }
 }
 
 function initFirebase() {

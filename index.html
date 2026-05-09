@@ -851,6 +851,7 @@ tr:hover td { background:var(--gray-100); }
   <div class="content">
     <div class="toolbar">
       <button class="btn btn-black" onclick="enterKiosk()">🖥 Kiosk Mode</button>
+      <button class="btn" style="background:var(--bryc-teal);color:white" onclick="showQRCode()">📱 QR Code</button>
       <button class="btn btn-outline" onclick="showCheckinList()">☑ Check-In List</button>
       <button class="btn btn-ghost" onclick="syncSheet()">⟳ Sync RSVP Sheet</button>
       <button class="btn btn-ghost" onclick="importRSVPs()">⬆ Import RSVPs</button>
@@ -1085,8 +1086,16 @@ function fbConfig() {
   try {
     const cfg = store.settings.firebaseConfig;
     if (!cfg) return null;
-    return typeof cfg === 'string' ? JSON.parse(cfg) : cfg;
-  } catch(e) { return null; }
+    if (typeof cfg === 'object') return cfg;
+    // Try strict JSON first
+    try { return JSON.parse(cfg); } catch(e) {}
+    // Handle JS object literal (unquoted keys) by converting to valid JSON
+    const json = cfg
+      .replace(/\/\*.*?\*\//gs, '')          // strip comments
+      .replace(/([{,]\s*)([a-zA-Z_][\w]*)\s*:/g, '$1"$2":')  // quote keys
+      .replace(/'/g, '"');                     // single → double quotes
+    return JSON.parse(json);
+  } catch(e) { console.error('fbConfig parse error:', e); return null; }
 }
 
 function initFirebase() {
