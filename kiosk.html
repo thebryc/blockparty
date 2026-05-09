@@ -516,8 +516,11 @@ function loadData() {
 // ── FIREBASE ───────────────────────────────────────────────────────────────
 function fbConfig() {
   try {
-    const data = loadData();
-    const cfg = data?.settings?.firebaseConfig;
+    // Read config from localStorage settings (set via dashboard)
+    const raw = localStorage.getItem('bryc_hub_settings') || localStorage.getItem('bryc_hub_v2');
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    const cfg = data?.settings?.firebaseConfig || data?.firebaseConfig;
     if (!cfg) return null;
     if (typeof cfg === 'object') return cfg;
     try { return JSON.parse(cfg); } catch(e) {}
@@ -529,20 +532,24 @@ function fbConfig() {
   } catch(e) { console.error('fbConfig parse error:', e); return null; }
 }
 
+// ── Hardcoded Firebase config — works on every device automatically ──────────
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyCkSsujShPIx1k5UvR35h6kS5UOWAes87I",
+  authDomain: "bryc-events.firebaseapp.com",
+  projectId: "bryc-events",
+  storageBucket: "bryc-events.firebasestorage.app",
+  messagingSenderId: "39382866962",
+  appId: "1:39382866962:web:b6e36188da072a81844ccb"
+};
+
 function initFirebase() {
-  const cfg = fbConfig();
-  if (!cfg) return false;
-  if (typeof firebase === 'undefined') return false;
+  if (typeof firebase === 'undefined') { console.warn('Firebase SDK not loaded'); return false; }
   try {
     const existing = firebase.apps.find(a => a.name === 'bryc-kiosk');
-    if (existing) {
-      _db = existing.firestore();
-    } else {
-      const app = firebase.initializeApp(cfg, 'bryc-kiosk');
-      _db = app.firestore();
-    }
-    _db.enablePersistence({ synchronizeTabs: true }).catch(()=>{});
+    _db = existing ? existing.firestore() : firebase.initializeApp(FIREBASE_CONFIG, 'bryc-kiosk').firestore();
+    _db.enablePersistence({ synchronizeTabs:true }).catch(()=>{});
     setSyncStatus('connected');
+    console.log('✓ Firebase connected (kiosk)');
     return true;
   } catch(e) {
     console.error('Firebase init:', e);
@@ -600,44 +607,68 @@ function setSyncStatus(status) {
 
 // ── INIT ───────────────────────────────────────────────────────────────────
 function init() {
-  const data = loadData();
-  if (!data || !data.events || data.events.length === 0) {
-    showError('No events found. Please set up an event in the dashboard first, then scan the QR code again.');
+  const ok = initFirebase();
+  if (!ok) {
+    const data = loadData();
+    if (data && data.events && data.events.length > 0) {
+      _loadFromData(data);
+    } else {
+      showError('Could not connect to Firebase. Make sure you have internet access and try again.');
+      setSyncStatus('error');
+    }
     return;
   }
+  setSyncStatus('connecting');
+  loadFromFirestore();
+}
 
-  // Find event — prefer URL param ?event=ID, then stored preference, then most recent
+function loadFromFirestore() {
   const urlParams = new URLSearchParams(window.location.search);
   const urlEventId = urlParams.get('event');
-  const storedEventId = localStorage.getItem(EVENT_ID_KEY);
 
-  eventId = (urlEventId && data.events.find(e=>e.id===urlEventId))
-    ? urlEventId
-    : (storedEventId && data.events.find(e=>e.id===storedEventId))
-    ? storedEventId
-    : data.events[data.events.length - 1].id;
-
-  eventData = data.events.find(e => e.id === eventId);
-  rsvps = data.rsvps?.[eventId] || [];
-
-  // Update header
-  document.getElementById('kiosk-event-name').textContent = eventData.name || 'BRYC Event';
-  const d = new Date((eventData.date||'') + 'T00:00:00');
-  const dateStr = isNaN(d) ? '' : d.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
-  document.getElementById('kiosk-tagline').textContent =
-    dateStr + (eventData.location ? ' · ' + eventData.location : '');
-
-  // Init Firebase
-  const ok = initFirebase();
-  if (ok) {
+  _db.collection('events').get().then(snap => {
+    const events = [];
+    snap.forEach(d => events.push({ id: d.id, ...d.data() }));
+    events.sort((a,b) => (a.date||'') > (b.date||'') ? 1 : -1);
+    if (!events.length) { showError('No events found. Please create an event in the dashboard first.'); return Promise.reject('no events'); }
+    eventId = (urlEventId && events.find(e=>e.id===urlEventId)) ? urlEventId : events[events.length-1].id;
+    eventData = events.find(e=>e.id===eventId);
+    document.getElementById('kiosk-event-name').textContent = eventData.name || 'BRYC Event';
+    const d = new Date((eventData.date||'')+'T00:00:00');
+    const dateStr = isNaN(d) ? '' : d.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
+    document.getElementById('kiosk-tagline').textContent = dateStr + (eventData.location ? ' · '+eventData.location : '');
+    return _db.collection('rsvps').doc(eventId).get();
+  }).then(doc => {
+    if (doc && doc.exists) rsvps = doc.data().list || [];
     subscribeCheckins();
-  } else {
-    setSyncStatus('error');
-  }
+    updateKioskCounts();
+    setSyncStatus('connected');
+    document.getElementById('loading-screen').style.display = 'none';
+    document.getElementById('kiosk-screen').classList.add('active');
+    // Live RSVP updates
+    _db.collection('rsvps').doc(eventId).onSnapshot(doc => {
+      if (doc.exists) { rsvps = doc.data().list || []; updateKioskCounts(); }
+    });
+  }).catch(err => {
+    if (err === 'no events') return;
+    console.error('Firestore load:', err);
+    const data = loadData();
+    if (data && data.events && data.events.length > 0) { _loadFromData(data); toast('Loaded offline data'); }
+    else { showError('Could not load event data. Error: ' + (err.message||err)); setSyncStatus('error'); }
+  });
+}
 
+function _loadFromData(data) {
+  const urlParams = new URLSearchParams(window.location.search);
+  const urlEventId = urlParams.get('event');
+  eventId = (urlEventId && data.events.find(e=>e.id===urlEventId)) ? urlEventId : data.events[data.events.length-1].id;
+  eventData = data.events.find(e=>e.id===eventId);
+  rsvps = data.rsvps?.[eventId] || [];
+  document.getElementById('kiosk-event-name').textContent = eventData?.name || 'BRYC Event';
   updateKioskCounts();
   document.getElementById('loading-screen').style.display = 'none';
   document.getElementById('kiosk-screen').classList.add('active');
+  setSyncStatus('error');
 }
 
 function showError(msg) {
@@ -645,6 +676,37 @@ function showError(msg) {
   document.getElementById('error-msg').textContent = msg;
   document.getElementById('error-screen').style.display = 'flex';
 }
+
+function showKioskReady() {
+  document.getElementById('kiosk-event-name').textContent = eventData.name || 'BRYC Event';
+  const d = new Date((eventData.date||'') + 'T00:00:00');
+  const dateStr = isNaN(d) ? '' : d.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
+  document.getElementById('kiosk-tagline').textContent =
+    dateStr + (eventData.location ? ' · ' + eventData.location : '');
+  updateKioskCounts();
+  document.getElementById('loading-screen').style.display = 'none';
+  document.getElementById('kiosk-screen').classList.add('active');
+  setSyncStatus('connected');
+}
+
+function subscribeEventData() {
+  if (!_db) return;
+  _db.collection('events').doc(eventId)
+    .onSnapshot(snap => {
+      if (!snap.exists) return;
+      const data = snap.data();
+      const { rsvps: rsvpList } = data;
+      if (Array.isArray(rsvpList)) {
+        rsvps = rsvpList;
+        updateKioskCounts();
+        const q = document.getElementById('kiosk-search')?.value || '';
+        if (document.getElementById('kp-search').classList.contains('active')) kioskSearch(q);
+        console.log(`✓ RSVPs synced: ${rsvps.length}`);
+      }
+    }, err => console.error('Event data sync error:', err));
+}
+
+
 
 // ── KIOSK LOGIC ────────────────────────────────────────────────────────────
 function setKioskBg(cls) {
@@ -886,24 +948,24 @@ function toast(msg, isError) {
 }
 
 // ── BOOT ───────────────────────────────────────────────────────────────────
-// Wait for Firebase SDK to load, then init
-window._fbKioskReady = function() {
-  init();
-};
+// Called by the Firebase CDN loader once SDK scripts are ready
+window._fbKioskReady = function() { init(); };
 
-// The Firebase loader script calls initFirebase() when done — we hook in here
+// Hook into the loader's initFirebase call
 const _origInitFb = window.initFirebase;
 window.initFirebase = function() {
   if (typeof _origInitFb === 'function') _origInitFb();
-  init();
+  // Only init once
+  if (document.getElementById('loading-screen').style.display !== 'none') init();
 };
 
-// Fallback: if SDK already loaded or isn't coming
+// Hard fallback — if SDK never loads after 6s, try anyway (may use localStorage)
 setTimeout(() => {
   if (document.getElementById('loading-screen').style.display !== 'none') {
+    console.warn('Firebase SDK timeout — attempting init anyway');
     init();
   }
-}, 2000);
+}, 6000);
 </script>
 </body>
 </html>

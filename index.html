@@ -44,10 +44,14 @@
       _loadScript(pair[1], function() {
         window._fbLoaded = true;
         console.log('Firebase SDK loaded from CDN', cdnIndex);
-        // Trigger init now that SDK is ready
         if (typeof initFirebase === 'function') initFirebase();
-        if (typeof store !== 'undefined' && store.currentEvent && typeof subscribeCheckins === 'function') {
-          subscribeCheckins(store.currentEvent);
+        // Load ALL data from Firestore now that SDK is ready
+        if (typeof subscribeAllData === 'function') {
+          subscribeAllData(function() {
+            if (typeof renderEvents === 'function') renderEvents();
+            if (store.currentEvent && typeof subscribeCheckins === 'function')
+              subscribeCheckins(store.currentEvent);
+          });
         }
       }, function() { _tryLoadFb(cdnIndex + 1); });
     }, function() { _tryLoadFb(cdnIndex + 1); });
@@ -1050,154 +1054,165 @@ tr:hover td { background:var(--gray-100); }
 
 <script>
 // ──────────────────────────────────────────────────────
-// STORE  — localStorage for events/rsvps/settings
-//          Firebase Firestore for check-ins (real-time, multi-device)
 // ──────────────────────────────────────────────────────
-const STORE_KEY = 'bryc_hub_v2';
+// STORE  — ALL data lives in Firestore (events, rsvps, checkins)
+//          localStorage only used for Firebase config
+// ──────────────────────────────────────────────────────
+const SETTINGS_KEY = 'bryc_hub_settings';
 let store = { events: [], rsvps: {}, checkins: {}, settings: {
   sheetId:'', tabName:'RSVPs', oauthClientId:'', headerRow:1, firebaseConfig:''
 }};
 
-function loadStore() {
+function loadSettings() {
   try {
-    const r = localStorage.getItem(STORE_KEY);
-    if (r) {
-      const saved = JSON.parse(r);
-      store.events   = saved.events   || [];
-      store.rsvps    = saved.rsvps    || {};
-      store.settings = { ...store.settings, ...(saved.settings || {}) };
-      store.checkins = {};  // always loaded fresh from Firebase
-    }
+    const r = localStorage.getItem(SETTINGS_KEY);
+    if (r) store.settings = { ...store.settings, ...JSON.parse(r) };
+    // Migrate legacy config if present
+    const leg = localStorage.getItem('bryc_hub_v2');
+    if (leg) { const o = JSON.parse(leg); if (o.settings) store.settings = { ...store.settings, ...o.settings }; }
   } catch(e) {}
 }
-function saveStore() {
-  const toSave = { events: store.events, rsvps: store.rsvps, settings: store.settings };
-  localStorage.setItem(STORE_KEY, JSON.stringify(toSave));
-}
-loadStore();
+function saveSettings() { localStorage.setItem(SETTINGS_KEY, JSON.stringify(store.settings)); }
+function saveStore() { saveSettings(); }  // alias so existing calls work
+loadSettings();
 
 // ──────────────────────────────────────────────────────
-// FIREBASE — real-time check-in sync (compat SDK)
+// FIREBASE — single source of truth for ALL data
 // ──────────────────────────────────────────────────────
 let _db = null;
 let _unsubscribers = {};
+let _dataUnsubscribers = [];
 
-function fbConfig() {
+function parseFbConfig(cfg) {
+  if (!cfg) return null;
+  if (typeof cfg === 'object') return cfg;
+  try { return JSON.parse(cfg); } catch(e) {}
   try {
-    const cfg = store.settings.firebaseConfig;
-    if (!cfg) return null;
-    if (typeof cfg === 'object') return cfg;
-    // Try strict JSON first
-    try { return JSON.parse(cfg); } catch(e) {}
-    // Handle JS object literal (unquoted keys) by converting to valid JSON
     const json = cfg
-      .replace(/\/\*.*?\*\//gs, '')          // strip comments
-      .replace(/([{,]\s*)([a-zA-Z_][\w]*)\s*:/g, '$1"$2":')  // quote keys
-      .replace(/'/g, '"');                     // single → double quotes
+      .replace(/\/\*.*?\*\//gs, '')
+      .replace(/([{,]\s*)([a-zA-Z_][\w]*)\s*:/g, '$1"$2":')
+      .replace(/'/g, '"');
     return JSON.parse(json);
-  } catch(e) { console.error('fbConfig parse error:', e); return null; }
+  } catch(e) { return null; }
 }
+
+// ── Hardcoded Firebase config — works on every device automatically ──────────
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyCkSsujShPIx1k5UvR35h6kS5UOWAes87I",
+  authDomain: "bryc-events.firebaseapp.com",
+  projectId: "bryc-events",
+  storageBucket: "bryc-events.firebasestorage.app",
+  messagingSenderId: "39382866962",
+  appId: "1:39382866962:web:b6e36188da072a81844ccb"
+};
 
 function initFirebase() {
-  const cfg = fbConfig();
-  if (!cfg) { console.log('No Firebase config saved yet'); return false; }
-  if (typeof firebase === 'undefined') {
-    console.warn('Firebase SDK not loaded yet — will retry when SDK loads');
-    return false;
-  }
+  if (typeof firebase === 'undefined') { console.warn('Firebase SDK not loaded yet'); return false; }
   try {
     const existing = firebase.apps.find(a => a.name === 'bryc-hub');
-    if (existing) {
-      _db = existing.firestore();
-    } else {
-      const app = firebase.initializeApp(cfg, 'bryc-hub');
-      _db = app.firestore();
-    }
-    _db.enablePersistence({ synchronizeTabs: true }).catch(e => {
-      // Persistence fails in private/incognito — that's fine
-      console.log('Persistence not available:', e.code);
-    });
+    _db = existing ? existing.firestore() : firebase.initializeApp(FIREBASE_CONFIG, 'bryc-hub').firestore();
+    _db.enablePersistence({ synchronizeTabs:true }).catch(()=>{});
     console.log('✓ Firebase connected');
-    toast('Firebase connected ✓');
     return true;
-  } catch(e) {
-    console.error('Firebase init failed:', e);
-    toast('Firebase error: ' + e.message, true);
-    return false;
-  }
+  } catch(e) { console.error('Firebase init:', e); toast('Firebase error: ' + e.message, true); return false; }
 }
 
-// Subscribe to real-time check-in updates for an event
-function subscribeCheckins(eventId) {
-  // Init Firebase if not already done
-  if (!_db) {
-    const ok = initFirebase();
-    if (!ok) { console.warn('Firebase not configured — check-ins local only'); return; }
-  }
-  // Unsubscribe any existing listener
-  if (_unsubscribers[eventId]) { _unsubscribers[eventId](); delete _unsubscribers[eventId]; }
-  
-  _unsubscribers[eventId] = _db
-    .collection('checkins').doc(eventId).collection('attendees')
-    .onSnapshot(snapshot => {
-      store.checkins[eventId] = [];
-      snapshot.forEach(d => store.checkins[eventId].push(d.data()));
-      if (store.currentEvent === eventId) {
-        renderDashboard();
-        updateKioskCounts();
-      }
-      console.log(`✓ Synced ${store.checkins[eventId].length} check-ins for ${eventId}`);
-    }, err => {
-      console.error('Firestore listener error:', err);
-      toast('⚠️ Firestore sync error — check console', true);
-    });
-}
-
-// Write a check-in to Firestore
-function fbAddCheckin(eventId, checkin) {
-  // Optimistic local update so UI is instant
-  if (!store.checkins[eventId]) store.checkins[eventId] = [];
-  if (!store.checkins[eventId].some(c => c.name === checkin.name)) {
-    store.checkins[eventId].push(checkin);
-  }
-
+// Subscribe to ALL app data — events + rsvps — from Firestore
+function subscribeAllData(onReady) {
   if (!_db && !initFirebase()) {
-    console.warn('No Firebase — check-in saved locally only');
-    renderDashboard(); updateKioskCounts();
+    _loadLegacy();
+    if (onReady) onReady();
     return;
   }
-  const safeName = checkin.name.replace(/[^a-zA-Z0-9_-]/g, '_');
-  _db.collection('checkins').doc(eventId)
-     .collection('attendees').doc(safeName)
-     .set({ ...checkin, syncedAt: firebase.firestore.FieldValue.serverTimestamp() })
-     .then(() => console.log('✓ Check-in saved:', checkin.name))
-     .catch(e => {
-       console.error('Firestore write failed:', e);
-       toast('⚠️ Check-in saved locally but not synced — check Firestore rules', true);
-     });
-}
-
-// Remove a check-in from Firestore
-function fbRemoveCheckin(eventId, name) {
-  // Optimistic local update
-  if (store.checkins[eventId]) {
-    store.checkins[eventId] = store.checkins[eventId].filter(c => c.name !== name);
+  let eventsReady = false;
+  let rsvpsReady = false;
+  function check() {
+    if (eventsReady && rsvpsReady && onReady) { onReady(); onReady = null; }
   }
-  renderDashboard();
+  // Unsubscribe previous listeners
+  _dataUnsubscribers.forEach(u => u());
+  _dataUnsubscribers = [];
 
-  if (!_db && !initFirebase()) return;
-  const safeName = name.replace(/[^a-zA-Z0-9_-]/g, '_');
-  _db.collection('checkins').doc(eventId)
-     .collection('attendees').doc(safeName)
-     .delete()
-     .then(() => console.log('✓ Check-out saved:', name))
-     .catch(e => console.error('Firestore delete failed:', e));
+  _dataUnsubscribers.push(
+    _db.collection('events').onSnapshot(snap => {
+      store.events = [];
+      snap.forEach(d => store.events.push({ id: d.id, ...d.data() }));
+      store.events.sort((a,b) => (a.date||'') > (b.date||'') ? 1 : -1);
+      eventsReady = true; check();
+      if (document.getElementById('events-view')?.classList.contains('active')) renderEvents();
+    }, e => { console.error('Events:', e); eventsReady = true; check(); })
+  );
+
+  _dataUnsubscribers.push(
+    _db.collection('rsvps').onSnapshot(snap => {
+      snap.forEach(d => { store.rsvps[d.id] = d.data().list || []; });
+      rsvpsReady = true; check();
+      if (store.currentEvent) renderDashboard();
+    }, e => { console.error('RSVPs:', e); rsvpsReady = true; check(); })
+  );
+
+  // Timeout fallback — if Firestore is slow, show what we have after 5s
+  setTimeout(() => { if (onReady) { onReady(); onReady = null; } }, 5000);
 }
 
-// initFirebase is called by the SDK loader above once scripts load
-// (see _tryLoadFb in the <head> script block)
+function subscribeCheckins(eventId) {
+  if (!_db && !initFirebase()) return;
+  if (_unsubscribers[eventId]) _unsubscribers[eventId]();
+  _unsubscribers[eventId] = _db.collection('checkins').doc(eventId).collection('attendees')
+    .onSnapshot(snap => {
+      store.checkins[eventId] = [];
+      snap.forEach(d => store.checkins[eventId].push(d.data()));
+      if (store.currentEvent === eventId) { renderDashboard(); updateKioskCounts(); }
+      console.log('✓ Check-ins:', store.checkins[eventId].length);
+    }, e => { console.error('Checkins:', e); toast('⚠️ Sync error', true); });
+}
 
-// ──────────────────────────────────────────────────────
+// Save event to Firestore
+function fbSaveEvent(evt) {
+  if (_db) _db.collection('events').doc(evt.id).set(evt).catch(e => console.error('Save event:', e));
+  else saveStore();
+}
+
+// Save full RSVP list for an event to Firestore
+function fbSaveRsvps(eventId, list) {
+  if (!_db) { saveStore(); return; }
+  _db.collection('rsvps').doc(eventId)
+    .set({ list, updatedAt: firebase.firestore.FieldValue.serverTimestamp() })
+    .then(() => console.log('✓ RSVPs saved:', list.length))
+    .catch(e => { console.error('Save RSVPs:', e); toast('⚠️ RSVPs not synced: ' + e.code, true); });
+}
+
+function fbAddCheckin(eventId, checkin) {
+  if (!store.checkins[eventId]) store.checkins[eventId] = [];
+  if (!store.checkins[eventId].some(c => c.name === checkin.name))
+    store.checkins[eventId].push(checkin);
+  if (!_db && !initFirebase()) { renderDashboard(); updateKioskCounts(); return; }
+  const safe = checkin.name.replace(/[^a-zA-Z0-9_-]/g, '_');
+  _db.collection('checkins').doc(eventId).collection('attendees').doc(safe)
+    .set({ ...checkin, syncedAt: firebase.firestore.FieldValue.serverTimestamp() })
+    .catch(e => { console.error('Check-in:', e); toast('⚠️ Check-in not synced: ' + e.code, true); });
+}
+
+function fbRemoveCheckin(eventId, name) {
+  if (store.checkins[eventId])
+    store.checkins[eventId] = store.checkins[eventId].filter(c => c.name !== name);
+  renderDashboard();
+  if (!_db && !initFirebase()) return;
+  const safe = name.replace(/[^a-zA-Z0-9_-]/g, '_');
+  _db.collection('checkins').doc(eventId).collection('attendees').doc(safe).delete().catch(e => console.error('Check-out:', e));
+}
+
+function _loadLegacy() {
+  try {
+    const raw = localStorage.getItem('bryc_hub_v2');
+    if (!raw) return;
+    const old = JSON.parse(raw);
+    store.events = old.events || [];
+    store.rsvps  = old.rsvps  || {};
+    console.log('Loaded legacy data — upload to Firebase via Import RSVPs');
+  } catch(e) {}
+}
+
 // AUTH  — @thebryc.org only
 // ──────────────────────────────────────────────────────
 let currentUser = null;
@@ -1363,7 +1378,8 @@ function createEvent() {
   });
   store.rsvps[id] = [];
   store.checkins[id] = [];
-  saveStore();
+  const newEvt = store.events[store.events.length-1];
+  fbSaveEvent(newEvt);  // save to Firestore so all devices see it
   closeModal('create-modal');
   renderEvents();
   toast(`"${name}" created!`);
@@ -2020,10 +2036,14 @@ function saveSheetSettings() {
 }
 function saveFirebase() {
   store.settings.firebaseConfig = document.getElementById('s-firebase').value.trim();
-  _db = null;  // reset so initFirebase() re-connects with new config
+  _db = null;
   const ok = initFirebase();
-  if (ok && store.currentEvent) subscribeCheckins(store.currentEvent);
-  if (ok) toast('Firebase connected ✓');
+  if (ok) {
+    subscribeAllData(function() {
+      renderEvents();
+      if (store.currentEvent) subscribeCheckins(store.currentEvent);
+    });
+  }
   saveStore(); toast('Firebase config saved!');
 }
 function testSync() { toast('Add your Sheet ID + OAuth Client ID in Settings to enable live sync.'); }
@@ -2053,7 +2073,9 @@ function importRSVPs() {
           const data = JSON.parse(ev.target.result);
           if (Array.isArray(data)) {
             store.rsvps[store.currentEvent] = data;
-            saveStore(); renderDashboard(); toast(`Imported ${data.length} RSVPs`);
+            fbSaveRsvps(store.currentEvent, data);  // save to Firestore — syncs all devices
+            renderDashboard();
+            toast(`Imported ${data.length} RSVPs — syncing to all devices…`);
           }
         } else { toast('Use JSON format for imports', true); }
       } catch { toast('Import failed', true); }
