@@ -888,6 +888,7 @@ tr:hover td { background:var(--gray-100); }
       <button class="btn btn-ghost" onclick="syncSheet()">⟳ Sync RSVP Sheet</button>
       <button class="btn btn-ghost" onclick="importRSVPs()">⬆ Import RSVPs</button>
       <button class="btn btn-ghost" onclick="exportRSVPs()">⬇ Export RSVPs</button>
+      <button class="btn btn-ghost" onclick="exportCheckins()">⬇ Export Check-Ins</button>
     </div>
     <div class="stats-row" id="dash-stats"></div>
     <div class="dash-grid">
@@ -2265,6 +2266,54 @@ function exportRSVPs() {
   const csv = [headers,...rows].map(row=>row.map(c=>`"${(c||'').toString().replace(/"/g,'""')}"`).join(',')).join('\n');
   dlFile(`${evt.name.replace(/\s+/g,'-')}-RSVPs.csv`,'text/csv',csv);
   toast('Exported!');
+}
+
+// Export every check-in for the current event as CSV — name, role chosen,
+// time, method, plus the registered role from the RSVP list for verification.
+function exportCheckins() {
+  const evt = store.events.find(e => e.id === store.currentEvent);
+  if (!evt) return toast('No event selected', true);
+  const cins  = store.checkins[evt.id] || [];
+  const rsvps = store.rsvps[evt.id]    || [];
+  if (!cins.length) return toast('No check-ins to export yet', true);
+  const ROLE_PRETTY = {
+    fellow:   'Current BRYC Fellow',
+    prospect: 'Prospective Fellow',
+    mentor:   'Mentor',
+    team:     'BRYC Team & Board',
+    friend:   'Friend of BRYC',
+  };
+  // Sort check-ins by time so the export reads chronologically.
+  const sorted = [...cins].sort((a,b) => (a.time||'').localeCompare(b.time||''));
+  const headers = [
+    'Full Name','Role Chosen at Check-In','Registered Role','RSVP Status',
+    'Method','Check-In Time','Check-In Date',
+    'Fellow Survey','Guardian Survey','Dietary','Notes'
+  ];
+  const rows = sorted.map(c => {
+    const rsvp = rsvps.find(r => (r.fullName||'').toLowerCase() === (c.name||'').toLowerCase()) || {};
+    const chosen = ROLE_PRETTY[c.role] || c.role || '';
+    const t = c.time ? new Date(c.time) : null;
+    return [
+      c.name || '',
+      chosen,
+      rsvp.communityRole || '(walk-in)',
+      rsvp.rsvpStatus || '',
+      c.method || '',
+      t ? t.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',second:'2-digit'}) : '',
+      t ? t.toLocaleDateString('en-US') : '',
+      rsvp.fellowSurveyDone ? 'Yes' : (rsvp.fellowSurveyDone === false ? 'No' : ''),
+      rsvp.guardianSurveyDone ? 'Yes' : (rsvp.guardianSurveyDone === false ? 'No' : ''),
+      rsvp.dietary || '',
+      rsvp.notes || ''
+    ];
+  });
+  const csv = [headers, ...rows]
+    .map(row => row.map(c => `"${(c==null?'':c).toString().replace(/"/g,'""')}"`).join(','))
+    .join('\n');
+  const fname = `${evt.name.replace(/\s+/g,'-')}-CheckIns-${new Date().toISOString().slice(0,10)}.csv`;
+  dlFile(fname, 'text/csv', csv);
+  toast(`Exported ${sorted.length} check-in${sorted.length===1?'':'s'}`);
 }
 function importRSVPs() {
   const inp = document.createElement('input');
